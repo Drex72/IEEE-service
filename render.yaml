@@ -3,6 +3,6 @@ services:
     name: ieee-sponsorship-api
     runtime: python
     rootDir: apps/api
-    buildCommand: pip install uv && uv sync --frozen
-    startCommand: ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install uv && uv sync --frozen --project apps/api
+    startCommand: ./apps/api/.venv/bin/uvicorn app.main:app --app-dir apps/api --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
