@@ -19,7 +19,9 @@ from app.models.schemas import (
 
 
 SchemaModel = TypeVar("SchemaModel", bound=BaseModel)
-EM_DASH_PATTERN = re.compile(r"\s*[—]\s*")
+EM_DASH_PATTERN = re.compile(r"[ \t]*—[ \t]*")
+MULTISPACE_PATTERN = re.compile(r"[ \t]{2,}")
+EXCESSIVE_BLANK_LINES_PATTERN = re.compile(r"\n{3,}")
 
 
 class OpenAIJSONAgent:
@@ -92,6 +94,11 @@ class OutreachPipeline:
             use_web_search=False,
         )
         self.email_agent = OpenAIJSONAgent(
+            client=client,
+            model=settings.openai_generation_model,
+            use_web_search=False,
+        )
+        self.humanizer_agent = OpenAIJSONAgent(
             client=client,
             model=settings.openai_generation_model,
             use_web_search=False,
@@ -194,7 +201,9 @@ class OutreachPipeline:
             schema_name="generated_email",
             system_prompt=(
                 "You write tailored sponsorship outreach emails for an engineering-focused sponsorship program. "
-                "The message must feel human, specific, and commercially credible. "
+                "This is cold outreach, so the email must earn attention quickly. "
+                "Open with a strong, company-specific hook in the first sentence. "
+                "Keep the message human, specific, commercially credible, and concise. "
                 "Do not use placeholders, cliches, exaggerated flattery, or em dashes. "
                 "Use commas or periods instead of em dashes."
             ),
@@ -202,16 +211,63 @@ class OutreachPipeline:
                 "Write one personalized outreach email using this context.\n\n"
                 f"{json.dumps({'company': company_payload, 'context': unified_context.model_dump(mode='json'), 'program_context': program_context}, indent=2)}\n\n"
                 "Requirements:\n"
+                "- This is a cold email, so the first sentence must hook quickly with a concrete, credible company-specific angle\n"
                 "- Professional but warm tone\n"
                 "- Reference the company's mission, products, or public themes naturally\n"
-                "- Explain why the program and the company align\n"
-                "- Include a concrete sponsorship or partnership ask\n"
-                "- Keep the subject line crisp and non-generic\n"
+                "- Explain the fit in as few words as possible\n"
+                "- Include one concrete sponsorship or partnership ask\n"
+                "- Surface the ask by the second paragraph at the latest\n"
+                "- Keep the subject line crisp, non-generic, and ideally under 7 words\n"
+                "- Keep the body short, ideally 110 to 150 words, and never exceed 170 words\n"
+                "- Use at most 3 short paragraphs\n"
+                "- Avoid throat-clearing, generic event exposition, and long scene-setting\n"
                 "- Never use em dashes; use commas or periods instead\n"
                 "- Return both markdown and simple HTML"
             ),
         )
         return self._normalize_email_style(generated_email)
+
+    def humanize_email(
+        self,
+        company: CompanyRecord,
+        program_context: dict[str, Any],
+        unified_context: UnifiedContext,
+        draft_email: GeneratedEmail,
+    ) -> GeneratedEmail:
+        company_payload = company.model_dump(mode="json")
+        humanized_email = self.humanizer_agent.run(
+            schema_model=GeneratedEmail,
+            schema_name="humanized_email",
+            system_prompt=(
+                "You are the humanizer agent in a sponsorship outreach pipeline. "
+                "Rewrite the provided draft so it sounds like a thoughtful human organizer wrote it. "
+                "Keep the same verified facts, company references, sponsorship intent, and core ask. "
+                "Do not invent claims, names, numbers, quotes, partnerships, or outcomes. "
+                "Remove obvious AI writing tells such as over-polished transitions, generic flattery, "
+                "balanced list-like cadence, and stiff phrasing. "
+                "Aim for natural professional writing that feels specific, direct, and credible. "
+                "Make the opening hook sharper if needed, but keep it factual and company-specific. "
+                "Tighten the draft aggressively for cold outreach, so it reads fast. "
+                "Keep the draft roughly the same length or slightly shorter. "
+                "Do not use placeholders, cliches, or em dashes. Use commas or periods instead."
+            ),
+            user_prompt=(
+                "Humanize this sponsorship outreach email while preserving its factual content.\n\n"
+                f"{json.dumps({'company': company_payload, 'context': unified_context.model_dump(mode='json'), 'program_context': program_context, 'draft_email': draft_email.model_dump(mode='json')}, indent=2)}\n\n"
+                "Requirements:\n"
+                "- Keep the email specific to the company and the program\n"
+                "- Preserve the concrete sponsorship ask\n"
+                "- Strengthen the opening hook if it feels soft or generic\n"
+                "- Sound like a real human operator, not a model polishing copy\n"
+                "- Keep the tone warm, confident, and commercially grounded\n"
+                "- Surface the ask by the second paragraph at the latest\n"
+                "- Keep the body short, ideally 110 to 150 words, and never exceed 170 words\n"
+                "- Use at most 3 short paragraphs\n"
+                "- Never use em dashes\n"
+                "- Return both markdown and simple HTML"
+            ),
+        )
+        return self._normalize_email_style(humanized_email)
 
     def generate_outreach(
         self,
@@ -228,10 +284,16 @@ class OutreachPipeline:
             company_research,
             leadership_research,
         )
-        generated_email = self.write_email(
+        draft_email = self.write_email(
             company,
             effective_program_context,
             unified_context,
+        )
+        generated_email = self.humanize_email(
+            company,
+            effective_program_context,
+            unified_context,
+            draft_email,
         )
 
         generated_context = {
@@ -240,22 +302,39 @@ class OutreachPipeline:
             "company_research": company_research.model_dump(mode="json"),
             "leadership_research": leadership_research.model_dump(mode="json"),
             "unified_context": unified_context.model_dump(mode="json"),
+            "draft_email": draft_email.model_dump(mode="json"),
+            "final_email": generated_email.model_dump(mode="json"),
         }
         return generated_email, generated_context
 
     def _normalize_email_style(self, generated_email: GeneratedEmail) -> GeneratedEmail:
-        def clean(text: str) -> str:
+        def clean_inline(text: str) -> str:
             without_em_dashes = EM_DASH_PATTERN.sub(", ", text)
-            return re.sub(r"\s{2,}", " ", without_em_dashes).strip()
+            return MULTISPACE_PATTERN.sub(" ", without_em_dashes).strip()
+
+        def clean_markdown(text: str) -> str:
+            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+            normalized = EM_DASH_PATTERN.sub(", ", normalized)
+            normalized = MULTISPACE_PATTERN.sub(" ", normalized)
+            normalized = re.sub(r"[ \t]+\n", "\n", normalized)
+            normalized = EXCESSIVE_BLANK_LINES_PATTERN.sub("\n\n", normalized)
+            return normalized.strip()
+
+        def clean_html(text: str) -> str:
+            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+            normalized = EM_DASH_PATTERN.sub(", ", normalized)
+            normalized = MULTISPACE_PATTERN.sub(" ", normalized)
+            normalized = EXCESSIVE_BLANK_LINES_PATTERN.sub("\n\n", normalized)
+            return normalized.strip()
 
         return generated_email.model_copy(
             update={
-                "subject": clean(generated_email.subject),
-                "preview_line": clean(generated_email.preview_line),
-                "body_markdown": clean(generated_email.body_markdown),
-                "body_html": clean(generated_email.body_html),
+                "subject": clean_inline(generated_email.subject),
+                "preview_line": clean_inline(generated_email.preview_line),
+                "body_markdown": clean_markdown(generated_email.body_markdown),
+                "body_html": clean_html(generated_email.body_html),
                 "personalization_highlights": [
-                    clean(item) for item in generated_email.personalization_highlights
+                    clean_inline(item) for item in generated_email.personalization_highlights
                 ],
             }
         )

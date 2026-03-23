@@ -1,18 +1,35 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { ArrowRight, FileSpreadsheet, Sparkles, WandSparkles } from "lucide-react";
 
 import { ApiError, uploadCompanies } from "@/lib/api";
 import type { UploadResponse } from "@/lib/types";
-import { Button, Card, Input, buttonStyles } from "@/components/ui";
+import { Button, Card, Input, Skeleton, SkeletonText, buttonStyles } from "@/components/ui";
+
+function ImportingState() {
+  return (
+    <Card className="bg-white/[0.04]">
+      <p className="text-xs uppercase tracking-[0.28em] text-white/45">Import In Progress</p>
+      <h3 className="mt-3 font-display text-3xl">Processing workbook and extracting sponsor records</h3>
+      <p className="mt-3 text-sm leading-7 text-white/62">
+        Company rows, workbook guidance, and campaign context are being organized into the workspace.
+      </p>
+      <div className="mt-5 space-y-3">
+        <Skeleton className="h-14 w-full rounded-[22px]" />
+        <Skeleton className="h-14 w-full rounded-[22px]" />
+        <SkeletonText lines={3} />
+      </div>
+    </Card>
+  );
+}
 
 export function UploadPageClient() {
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [isUploading, setIsUploading] = useState(false);
 
   const previewCompanies = result?.companies.slice(0, 5) ?? [];
 
@@ -21,12 +38,12 @@ export function UploadPageClient() {
       <Card className="overflow-hidden bg-gradient-to-br from-accent/12 via-white/[0.05] to-accentSoft/10">
         <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
           <div className="max-w-3xl">
-            <p className="text-xs uppercase tracking-[0.36em] text-accent/80">Import Workspace</p>
+            <p className="text-xs uppercase tracking-[0.36em] text-accent/80">Prospect Intake</p>
             <h2 className="mt-4 font-display text-4xl leading-tight lg:text-5xl">
-              Start with the tracker, then let the platform organize the rest.
+              Import the IEEE IES UNILAG sponsor tracker.
             </h2>
             <p className="mt-4 max-w-2xl text-sm leading-7 text-white/68">
-              This parser is tuned for the IES UNILAG workbook shape, including company rows, notes, status, and the tracker guidance sheet that can seed your campaign context.
+              This parser is tuned for the IEEE IES UNILAG workbook structure, including company rows, notes, status fields, and guidance sheets that can seed your campaign context.
             </p>
           </div>
 
@@ -38,7 +55,7 @@ export function UploadPageClient() {
               href="#upload-zone"
               className={buttonStyles()}
             >
-              Upload File
+              Start Import
               <ArrowRight className="h-4 w-4" />
             </a>
           </div>
@@ -52,8 +69,8 @@ export function UploadPageClient() {
               <FileSpreadsheet className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-xs uppercase tracking-[0.28em] text-white/45">Tracker Import</p>
-              <h3 className="mt-2 font-display text-3xl">Drop in the Excel workbook</h3>
+              <p className="text-xs uppercase tracking-[0.28em] text-white/45">Workbook Upload</p>
+              <h3 className="mt-2 font-display text-3xl">Upload the sponsor workbook</h3>
             </div>
           </div>
 
@@ -65,7 +82,7 @@ export function UploadPageClient() {
             />
             <div className="mt-4 grid gap-3 text-sm leading-6 text-white/62">
               <p>The uploader expects `.xlsx` and works best with the sponsor tracker columns for company, contact, status, and notes.</p>
-              <p>The import will not generate emails yet. It only loads companies and campaign hints into the workspace.</p>
+              <p>The import does not generate outreach yet. It prepares sponsor records and campaign guidance for the next step.</p>
             </div>
           </div>
 
@@ -77,25 +94,27 @@ export function UploadPageClient() {
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <Button
-              disabled={!file || isPending}
-              onClick={() =>
-                startTransition(() => {
-                  if (!file) {
-                    return;
+              disabled={!file || isUploading}
+              onClick={() => {
+                if (!file) {
+                  return;
+                }
+                void (async () => {
+                  try {
+                    setIsUploading(true);
+                    setError(null);
+                    setResult(null);
+                    const payload = await uploadCompanies(file);
+                    setResult(payload);
+                  } catch (err) {
+                    setError(err instanceof ApiError ? err.message : "Upload failed.");
+                  } finally {
+                    setIsUploading(false);
                   }
-                  void (async () => {
-                    try {
-                      setError(null);
-                      const payload = await uploadCompanies(file);
-                      setResult(payload);
-                    } catch (err) {
-                      setError(err instanceof ApiError ? err.message : "Upload failed.");
-                    }
-                  })();
-                })
-              }
+                })();
+              }}
             >
-              {isPending ? "Importing..." : "Upload and Parse"}
+              {isUploading ? "Importing..." : "Import Workbook"}
             </Button>
             {file ? (
               <p className="text-sm text-white/55">{file.name}</p>
@@ -107,53 +126,85 @@ export function UploadPageClient() {
 
         <div className="space-y-6">
           <Card>
-            <p className="text-xs uppercase tracking-[0.28em] text-white/45">What Gets Stored</p>
+            <p className="text-xs uppercase tracking-[0.28em] text-white/45">Imported Data</p>
             <div className="mt-5 grid gap-4 md:grid-cols-2">
               <div className="rounded-[24px] border border-line bg-white/[0.03] p-5">
-                <p className="font-medium text-white">Company records</p>
+                <p className="font-medium text-white">Sponsor records</p>
                 <p className="mt-2 text-sm leading-6 text-white/62">
                   Name, website, industry, status, notes, source row, and contact data are normalized into Supabase.
                 </p>
               </div>
               <div className="rounded-[24px] border border-line bg-white/[0.03] p-5">
-                <p className="font-medium text-white">Tracker guidance</p>
+                <p className="font-medium text-white">Workbook guidance</p>
                 <p className="mt-2 text-sm leading-6 text-white/62">
-                  Banner copy, instructions, and IEEE positioning hints become reusable campaign context.
+                  Banner copy, instructions, and IEEE positioning notes become reusable campaign context.
                 </p>
               </div>
             </div>
           </Card>
 
-          <Card>
-            <p className="text-xs uppercase tracking-[0.28em] text-white/45">After Upload</p>
-            <div className="mt-5 space-y-4">
-              {[
-                "Save or refine the global campaign brief on the dashboard.",
-                "Queue research for one company or the full list in the background.",
-                "Open any company workspace to inspect progress, edit the draft, and send.",
-              ].map((item) => (
-                <div
-                  key={item}
-                  className="rounded-[22px] border border-line bg-white/[0.03] px-4 py-4 text-sm leading-6 text-white/68"
-                >
-                  {item}
-                </div>
-              ))}
-            </div>
-          </Card>
+          {isUploading ? (
+            <ImportingState />
+          ) : (
+            <Card>
+              <p className="text-xs uppercase tracking-[0.28em] text-white/45">Next Steps</p>
+              <div className="mt-5 space-y-4">
+                {[
+                  "Refine the campaign brief on the dashboard before generation begins.",
+                  "Queue sponsor research for one company or the full list in the background.",
+                  "Open any sponsor record to inspect progress, refine the draft, and send outreach.",
+                ].map((item) => (
+                  <div
+                    key={item}
+                    className="rounded-[22px] border border-line bg-white/[0.03] px-4 py-4 text-sm leading-6 text-white/68"
+                  >
+                    {item}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
         </div>
       </div>
+
+      {isUploading ? (
+        <Card className="overflow-hidden bg-gradient-to-br from-white/[0.05] via-white/[0.03] to-accentSoft/10">
+          <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
+            <div className="max-w-3xl">
+              <Skeleton className="h-3 w-40" />
+              <Skeleton className="mt-4 h-10 w-[420px] max-w-full" />
+              <SkeletonText className="mt-4" lines={2} />
+            </div>
+            <Skeleton className="h-11 w-44 rounded-full" />
+          </div>
+          <div className="mt-8 grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+            <Card className="bg-white/[0.03] p-5">
+              <Skeleton className="h-3 w-32" />
+              <div className="mt-4 space-y-3">
+                {Array.from({ length: 5 }).map((_, index) => (
+                  <Skeleton key={`preview-${index}`} className="h-16 w-full rounded-[20px]" />
+                ))}
+              </div>
+            </Card>
+            <Card className="bg-white/[0.03] p-5">
+              <Skeleton className="h-3 w-36" />
+              <Skeleton className="mt-4 h-6 w-52 max-w-full" />
+              <SkeletonText className="mt-4" lines={4} />
+            </Card>
+          </div>
+        </Card>
+      ) : null}
 
       {result ? (
         <Card className="overflow-hidden bg-gradient-to-br from-white/[0.05] via-white/[0.03] to-accentSoft/10">
           <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
             <div className="max-w-3xl">
-              <p className="text-xs uppercase tracking-[0.32em] text-accent/80">Import Complete</p>
+              <p className="text-xs uppercase tracking-[0.32em] text-accent/80">Import Completed</p>
               <h3 className="mt-3 font-display text-4xl">
                 {result.imported} compan{result.imported === 1 ? "y" : "ies"} are ready for outreach.
               </h3>
               <p className="mt-4 text-sm leading-7 text-white/65">
-                Head to the dashboard to set the shared brief and queue research runs.
+                Continue to the dashboard to finalize the campaign brief and queue sponsor research.
               </p>
             </div>
 
@@ -165,7 +216,7 @@ export function UploadPageClient() {
 
           <div className="mt-8 grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
             <div className="rounded-[28px] border border-line bg-white/[0.03] p-5">
-              <p className="text-xs uppercase tracking-[0.28em] text-white/45">Imported Preview</p>
+              <p className="text-xs uppercase tracking-[0.28em] text-white/45">Imported Companies</p>
               <div className="mt-4 space-y-3">
                 {previewCompanies.map((company) => (
                   <div
@@ -183,9 +234,9 @@ export function UploadPageClient() {
 
             {result.tracker_summary ? (
               <div className="rounded-[28px] border border-line bg-white/[0.03] p-5">
-                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Tracker Summary</p>
+                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Workbook Guidance</p>
                 <h4 className="mt-3 text-lg font-semibold text-white">
-                  {result.tracker_summary.banner ?? "Tracker guidance found"}
+                  {result.tracker_summary.banner ?? "Workbook guidance found"}
                 </h4>
                 {result.tracker_summary.context_line ? (
                   <p className="mt-3 text-sm leading-7 text-white/68">
@@ -213,10 +264,10 @@ export function UploadPageClient() {
               <div className="rounded-[28px] border border-line bg-white/[0.03] p-5">
                 <div className="flex items-center gap-3">
                   <Sparkles className="h-4 w-4 text-accent" />
-                  <p className="font-medium text-white">No tracker summary detected</p>
+                  <p className="font-medium text-white">No workbook guidance detected</p>
                 </div>
                 <p className="mt-4 text-sm leading-7 text-white/62">
-                  That is fine. You can still set the campaign brief manually from the dashboard before generation starts.
+                  That is fine. You can still define the campaign brief manually from the dashboard before generation starts.
                 </p>
               </div>
             )}

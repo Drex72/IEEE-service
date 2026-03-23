@@ -169,10 +169,10 @@ class GenerationWorker:
                 job,
                 steps,
                 step_key="email_generation",
-                progress=90,
+                progress=88,
                 current_step="Writing email draft",
             )
-            generated_email = self.pipeline.write_email(
+            draft_email = self.pipeline.write_email(
                 company,
                 program_context,
                 unified_context,
@@ -181,10 +181,34 @@ class GenerationWorker:
                 job,
                 steps,
                 step_key="email_generation",
+                progress=93,
+                current_step="Humanizing draft",
+                summary=draft_email.preview_line,
+                details=self._email_details(draft_email),
+                sources=[],
+            )
+
+            self._set_step_running(
+                job,
+                steps,
+                step_key="email_humanization",
                 progress=96,
+                current_step="Humanizing draft",
+            )
+            generated_email = self.pipeline.humanize_email(
+                company,
+                program_context,
+                unified_context,
+                draft_email,
+            )
+            self._set_step_completed(
+                job,
+                steps,
+                step_key="email_humanization",
+                progress=99,
                 current_step="Saving completed draft",
                 summary=generated_email.preview_line,
-                details=self._email_details(generated_email),
+                details=self._humanized_email_details(generated_email),
                 sources=[],
             )
 
@@ -194,6 +218,8 @@ class GenerationWorker:
                 "company_research": company_research.model_dump(mode="json"),
                 "leadership_research": leadership_research.model_dump(mode="json"),
                 "unified_context": unified_context.model_dump(mode="json"),
+                "draft_email": draft_email.model_dump(mode="json"),
+                "final_email": generated_email.model_dump(mode="json"),
                 "generation_job_id": job.id,
             }
             template = self.repo.save_generated_template(
@@ -401,6 +427,17 @@ class GenerationWorker:
         if result.personalization_highlights:
             details.append(
                 f"Personalization highlights: {', '.join(result.personalization_highlights[:3])}"
+            )
+        return details
+
+    def _humanized_email_details(self, result: GeneratedEmail) -> list[str]:
+        details = [f"Final subject line: {result.subject}"]
+        if result.preview_line:
+            details.append(f"Preview line: {result.preview_line}")
+        details.append("Final pass focused on making the draft sound more natural and less model-written.")
+        if result.personalization_highlights:
+            details.append(
+                f"Kept personalization hooks: {', '.join(result.personalization_highlights[:3])}"
             )
         return details
 

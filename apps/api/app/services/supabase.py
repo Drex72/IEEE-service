@@ -767,6 +767,11 @@ class SupabaseRepository:
                 title="Email Draft",
                 description="Writing the outreach email with a concrete ask, tone, and personalization hooks.",
             ),
+            GenerationStepRecord(
+                key="email_humanization",
+                title="Humanizer",
+                description="Refining the draft so it sounds more natural, direct, and less model-written before saving.",
+            ),
         ]
 
     def _serialize_steps(

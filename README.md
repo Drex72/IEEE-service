@@ -78,6 +78,80 @@ npm run dev
 - The backend stores encrypted access and refresh tokens in `gmail_accounts`.
 - The frontend uses an `owner_key` header so the app works even before full auth is added.
 
+## Deployment
+
+### Recommended split
+
+- Deploy `apps/web` to Vercel
+- Deploy `apps/api` to Render
+- Keep Supabase as the shared database
+
+This project currently runs an in-process background worker inside the FastAPI app, so the API is a better fit for a long-running web service than a serverless-only deployment.
+
+### Render API deployment
+
+The repo includes [`render.yaml`](/Users/apple/Documents/IEEE/render.yaml) with the API service settings:
+
+- Root directory: `apps/api`
+- Build command: `pip install uv && uv sync --frozen`
+- Start command: `./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Health check: `/health`
+
+Required environment variables for Render:
+
+- `FRONTEND_URL`
+- `CORS_ORIGINS`
+- `DEFAULT_OWNER_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `OPENAI_API_KEY`
+- `OPENAI_RESEARCH_MODEL`
+- `OPENAI_GENERATION_MODEL`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI`
+- `GMAIL_TOKEN_ENCRYPTION_KEY`
+
+Example production values:
+
+```env
+FRONTEND_URL=https://your-web-app.vercel.app
+CORS_ORIGINS=https://your-web-app.vercel.app
+DEFAULT_OWNER_KEY=ieee-ies-unilag-admin
+GOOGLE_REDIRECT_URI=https://your-api-service.onrender.com/api/gmail/callback
+```
+
+### Vercel web deployment
+
+Create a Vercel project using `apps/web` as the root directory.
+
+Required environment variables for Vercel:
+
+- `NEXT_PUBLIC_API_URL`
+- `NEXT_PUBLIC_OWNER_KEY`
+
+Example:
+
+```env
+NEXT_PUBLIC_API_URL=https://your-api-service.onrender.com
+NEXT_PUBLIC_OWNER_KEY=ieee-ies-unilag-admin
+```
+
+### Supabase production setup
+
+Apply both SQL files before using the deployed app:
+
+1. [`supabase/migrations/0001_init.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0001_init.sql)
+2. [`supabase/migrations/0002_async_generation.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0002_async_generation.sql)
+
+### Gmail production callback
+
+In Google Cloud OAuth settings, add the deployed backend callback URL:
+
+```text
+https://your-api-service.onrender.com/api/gmail/callback
+```
+
 ## OpenAI flow
 
 The API uses four agents in sequence:
@@ -108,4 +182,3 @@ The generated context is saved with the template so the user can review why a me
 - The Excel parser is tuned to the uploaded `IES_Unilag_Hackathon_Sponsor_Tracker_v2` format, including row-4 headers and the second-sheet instructions.
 - The current workspace owner model is `owner_key` based, which makes local testing easy. You can later replace it with Supabase Auth session IDs without changing the table relationships.
 - If you want background jobs, the clean next step is to move generation and send actions into a queue worker while keeping the same API contract.
-
