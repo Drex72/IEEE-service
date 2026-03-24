@@ -1,6 +1,8 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
+const VALID_EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -24,6 +26,12 @@ export function statusTone(status?: string | null) {
 
 export function generationTone(status?: string | null) {
   const normalized = (status ?? "").toLowerCase();
+  if (normalized === "cancelled") {
+    return "muted";
+  }
+  if (normalized === "cancelling") {
+    return "warning";
+  }
   if (normalized === "failed") {
     return "danger";
   }
@@ -44,16 +52,36 @@ export function jobStatusLabel(status?: string | null, currentStep?: string | nu
   if (normalized === "running" && currentStep) {
     return currentStep;
   }
+  if (normalized === "cancelling") {
+    return currentStep ?? "Cancellation requested";
+  }
   if (normalized === "queued") {
     return "Queued";
   }
+  if (normalized === "cancelled") {
+    return "Cancelled";
+  }
   if (normalized === "completed") {
-    return "Completed";
+    return currentStep ?? "Completed";
   }
   if (normalized === "failed") {
-    return "Failed";
+    return currentStep ?? "Failed";
   }
   return currentStep ?? "Idle";
+}
+
+export function jobTriggerLabel(trigger?: string | null) {
+  const normalized = (trigger ?? "").toLowerCase();
+  if (normalized === "contact-discovery") {
+    return "Contact discovery";
+  }
+  if (normalized.includes("regenerate")) {
+    return "Draft regeneration";
+  }
+  if (normalized.includes("generate")) {
+    return "Draft generation";
+  }
+  return "Background run";
 }
 
 export function formatTimestamp(value?: string | null) {
@@ -82,19 +110,58 @@ export function escapeHtml(input: string) {
 }
 
 export function markdownToHtml(markdown: string) {
-  const paragraphs = markdown
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean)
-    .map((paragraph) => {
-      const html = escapeHtml(paragraph)
-        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-        .replace(/\*(.+?)\*/g, "<em>$1</em>")
-        .replace(/\n/g, "<br />");
-      return `<p>${html}</p>`;
-    });
+  const normalized = markdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  const lines = normalized.split("\n");
+  const htmlBlocks: string[] = [];
+  let paragraphLines: string[] = [];
+  let bulletLines: string[] = [];
 
-  return paragraphs.join("");
+  function inlineFormat(value: string) {
+    return escapeHtml(value)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*(.+?)\*/g, "<em>$1</em>");
+  }
+
+  function flushParagraph() {
+    if (!paragraphLines.length) {
+      return;
+    }
+    htmlBlocks.push(`<p>${paragraphLines.map(inlineFormat).join("<br />")}</p>`);
+    paragraphLines = [];
+  }
+
+  function flushBullets() {
+    if (!bulletLines.length) {
+      return;
+    }
+    htmlBlocks.push(
+      `<ul>${bulletLines
+        .map((line) => line.replace(/^[-*]\s+/, "").trim())
+        .map((line) => `<li>${inlineFormat(line)}</li>`)
+        .join("")}</ul>`,
+    );
+    bulletLines = [];
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      flushBullets();
+      continue;
+    }
+    if (/^[-*]\s+/.test(trimmed)) {
+      flushParagraph();
+      bulletLines.push(trimmed);
+      continue;
+    }
+    flushBullets();
+    paragraphLines.push(trimmed);
+  }
+
+  flushParagraph();
+  flushBullets();
+  return htmlBlocks.join("");
 }
 
 export function formatMaybeUrl(url?: string | null) {
@@ -107,4 +174,8 @@ export function formatMaybeUrl(url?: string | null) {
   } catch {
     return url;
   }
+}
+
+export function isValidEmail(value?: string | null) {
+  return Boolean(value && VALID_EMAIL_PATTERN.test(value.trim()));
 }

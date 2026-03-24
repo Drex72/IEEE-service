@@ -7,6 +7,7 @@ import {
   ExternalLink,
   FileText,
   Layers3,
+  Linkedin,
   LoaderCircle,
   Mail,
   PenSquare,
@@ -15,24 +16,28 @@ import {
   Save,
   Send,
   Sparkles,
+  StopCircle,
+  Users2,
 } from "lucide-react";
 
 import {
   ApiError,
+  cancelGenerationJob,
   generateTemplate,
   getCampaignContext,
   getCompany,
+  getCompanyContacts,
   getGmailStatus,
   getLatestGenerationJob,
-  getTemplate,
   regenerateTemplate,
   sendEmail,
   updateCompany,
-  updateTemplate,
+  updateContactDraft,
 } from "@/lib/api";
 import type {
+  CompanyContactRecord,
   CompanyRecord,
-  EmailTemplateRecord,
+  ContactOutreachDraftRecord,
   GenerationJobRecord,
   GenerationStepRecord,
   GmailStatusResponse,
@@ -41,7 +46,9 @@ import {
   formatMaybeUrl,
   formatTimestamp,
   generationTone,
+  isValidEmail,
   jobStatusLabel,
+  jobTriggerLabel,
   markdownToHtml,
   statusTone,
 } from "@/lib/utils";
@@ -66,16 +73,18 @@ type ActiveAction =
   | "queueGenerate"
   | "queueRegenerate"
   | "saveOverride"
-  | "save"
+  | "saveDraft"
   | "send"
+  | "cancelJob"
   | null;
 
 type WorkspaceTab = "overview" | "research" | "draft";
+type ChannelTab = "email" | "linkedin";
 
 const workspaceTabs = [
   { id: "overview", label: "Overview", icon: <Layers3 className="h-4 w-4" /> },
   { id: "research", label: "Research", icon: <Sparkles className="h-4 w-4" /> },
-  { id: "draft", label: "Draft", icon: <PenSquare className="h-4 w-4" /> },
+  { id: "draft", label: "Outreach", icon: <PenSquare className="h-4 w-4" /> },
 ] as const;
 
 function CompanyDetailSkeleton() {
@@ -102,15 +111,8 @@ function CompanyDetailSkeleton() {
             <Skeleton className="h-11 w-32 rounded-full" />
           </div>
         </div>
-
         <div className="mt-6 rounded-[26px] border border-line bg-white/[0.03] p-5">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="min-w-0">
-              <Skeleton className="h-3 w-20" />
-              <Skeleton className="mt-3 h-6 w-56 max-w-full" />
-            </div>
-            <Skeleton className="h-4 w-20" />
-          </div>
+          <Skeleton className="h-4 w-44" />
           <Skeleton className="mt-4 h-2.5 w-full rounded-full" />
         </div>
       </Card>
@@ -133,40 +135,20 @@ function CompanyDetailSkeleton() {
         </div>
       </Card>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
         <Card>
           <Skeleton className="h-3 w-24" />
           <Skeleton className="mt-4 h-8 w-52 max-w-full" />
-          <div className="mt-5 overflow-hidden rounded-[24px] border border-line p-5">
-            <Skeleton className="h-4 w-full" />
-            <SkeletonText className="mt-4" lines={7} />
-          </div>
+          <SkeletonText className="mt-5" lines={8} />
         </Card>
-        <div className="space-y-5">
-          <Card>
-            <Skeleton className="h-3 w-28" />
-            <Skeleton className="mt-4 h-8 w-64 max-w-full" />
-            <SkeletonText className="mt-5" lines={4} />
-          </Card>
-          <Card>
-            <Skeleton className="h-3 w-28" />
-            <Skeleton className="mt-4 h-8 w-56 max-w-full" />
-            <SkeletonText className="mt-5" lines={4} />
-          </Card>
-        </div>
+        <Card>
+          <Skeleton className="h-3 w-28" />
+          <Skeleton className="mt-4 h-8 w-64 max-w-full" />
+          <SkeletonText className="mt-5" lines={7} />
+        </Card>
       </div>
     </div>
   );
-}
-
-async function fileToBase64(file: File) {
-  const buffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return window.btoa(binary);
 }
 
 function MetricCard({
@@ -192,7 +174,7 @@ function MetricCard({
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs uppercase tracking-[0.26em] text-white/45">{label}</p>
         <div
-          className={`max-w-[65%] rounded-full px-3 py-1 text-xs font-semibold ${toneClasses[tone]}`}
+          className={`max-w-[70%] rounded-full px-3 py-1 text-xs font-semibold ${toneClasses[tone]}`}
         >
           <TruncatedText text={value} />
         </div>
@@ -342,13 +324,120 @@ function StepPanel({ step }: { step: GenerationStepRecord }) {
   );
 }
 
+async function fileToBase64(file: File) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return window.btoa(binary);
+}
+
+function getContactLabel(contact: CompanyContactRecord) {
+  return (
+    contact.full_name?.trim() ||
+    contact.email?.trim() ||
+    contact.raw_contact?.trim() ||
+    contact.reach_channel?.trim() ||
+    "Team contact"
+  );
+}
+
+function normalizeContactText(value?: string | null) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function getContactSubLabel(contact: CompanyContactRecord) {
+  const label = getContactLabel(contact);
+  const roleTitle = contact.role_title?.trim();
+  const email = contact.email?.trim();
+  const rawContact = contact.raw_contact?.trim();
+  const reachChannel = contact.reach_channel?.trim();
+  const parts = [roleTitle];
+
+  if (email && normalizeContactText(email) !== normalizeContactText(label)) {
+    parts.push(email);
+  }
+
+  if (parts.length) {
+    return parts.join(" • ");
+  }
+  if (reachChannel) {
+    return reachChannel;
+  }
+  if (contact.linkedin_url) {
+    return "LinkedIn profile captured";
+  }
+  if (rawContact && normalizeContactText(rawContact) !== normalizeContactText(label)) {
+    return rawContact;
+  }
+  if (email) {
+    return "Direct email captured";
+  }
+  return "No role or email captured yet";
+}
+
+function getContactDraft(
+  contact: CompanyContactRecord | null | undefined,
+  channel: ChannelTab,
+) {
+  return contact?.drafts.find((draft) => draft.channel === channel) ?? null;
+}
+
+function patchDraftIntoContacts(
+  contacts: CompanyContactRecord[],
+  updatedDraft: ContactOutreachDraftRecord,
+) {
+  return contacts.map((contact) => {
+    if (contact.id !== updatedDraft.contact_id) {
+      return contact;
+    }
+    const nextDrafts = contact.drafts.some(
+      (draft) => draft.channel === updatedDraft.channel,
+    )
+      ? contact.drafts.map((draft) =>
+          draft.channel === updatedDraft.channel ? updatedDraft : draft,
+        )
+      : [...contact.drafts, updatedDraft];
+
+    nextDrafts.sort((left, right) => {
+      const leftScore = left.channel === "email" ? 0 : 1;
+      const rightScore = right.channel === "email" ? 0 : 1;
+      return leftScore - rightScore;
+    });
+    return { ...contact, drafts: nextDrafts };
+  });
+}
+
+function getDraftHighlights(
+  draft: ContactOutreachDraftRecord | null,
+  channel: ChannelTab,
+) {
+  if (!draft) {
+    return [] as string[];
+  }
+  const generatedContext = draft.generated_context as Record<string, any>;
+  const finalBundle = generatedContext.final_bundle as Record<string, any> | undefined;
+  if (channel === "email") {
+    const email = finalBundle?.email as { personalization_highlights?: string[] } | undefined;
+    return email?.personalization_highlights ?? [];
+  }
+  const linkedin = finalBundle?.linkedin_message as
+    | { personalization_highlights?: string[] }
+    | undefined;
+  return linkedin?.personalization_highlights ?? [];
+}
+
 export function CompanyDetailClient({ companyId }: { companyId: string }) {
   const [company, setCompany] = useState<CompanyRecord | null>(null);
-  const [template, setTemplate] = useState<EmailTemplateRecord | null>(null);
+  const [contacts, setContacts] = useState<CompanyContactRecord[]>([]);
   const [latestJob, setLatestJob] = useState<GenerationJobRecord | null>(null);
   const [gmailStatus, setGmailStatus] = useState<GmailStatusResponse | null>(null);
   const [globalCampaignContext, setGlobalCampaignContext] = useState("");
   const [companyCampaignOverride, setCompanyCampaignOverride] = useState("");
+  const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
+  const [selectedChannel, setSelectedChannel] = useState<ChannelTab>("email");
   const [subject, setSubject] = useState("");
   const [previewLine, setPreviewLine] = useState("");
   const [contentMarkdown, setContentMarkdown] = useState("");
@@ -364,63 +453,53 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
   const previousJobStatusRef = useRef<string | null>(null);
   const initializedTabRef = useRef(false);
 
+  const selectedContact =
+    contacts.find((contact) => contact.id === selectedContactId) ?? contacts[0] ?? null;
+  const emailDraft = getContactDraft(selectedContact, "email");
+  const linkedinDraft = getContactDraft(selectedContact, "linkedin");
+  const selectedDraft = selectedChannel === "email" ? emailDraft : linkedinDraft;
   const previewHtml = markdownToHtml(contentMarkdown);
   const jobStatus = latestJob?.status ?? company?.generation_status ?? null;
-  const jobCurrentStep =
-    latestJob?.current_step ?? company?.generation_current_step ?? null;
+  const jobCurrentStep = latestJob?.current_step ?? company?.generation_current_step ?? null;
   const jobProgress =
     latestJob?.progress_percent ?? company?.generation_progress_percent ?? 0;
-  const jobIsActive = jobStatus === "queued" || jobStatus === "running";
+  const jobIsActive =
+    jobStatus === "queued" || jobStatus === "running" || jobStatus === "cancelling";
   const hasUnsavedOverride =
     companyCampaignOverride.trim() !== (company?.campaign_context_override ?? "").trim();
   const hasUnsavedDraft =
-    subject !== (template?.subject ?? "") ||
-    previewLine !== (template?.preview_line ?? "") ||
-    contentMarkdown !== (template?.content_markdown ?? "");
+    subject !== (selectedDraft?.subject ?? "") ||
+    previewLine !== (selectedDraft?.preview_line ?? "") ||
+    contentMarkdown !== (selectedDraft?.content_markdown ?? "");
   const effectiveCampaignBrief =
     companyCampaignOverride.trim() || globalCampaignContext.trim();
-  const unifiedContext = template?.generated_context?.unified_context;
+  const unifiedContext =
+    emailDraft?.generated_context?.unified_context ??
+    selectedDraft?.generated_context?.unified_context;
   const completedSteps =
     latestJob?.steps.filter((step) => step.status === "completed").length ?? 0;
   const totalSteps = latestJob?.steps.length ?? 0;
   const siteLabel = formatMaybeUrl(company?.website);
-
-  function applyTemplate(
-    nextTemplate: EmailTemplateRecord,
-    defaultRecipient?: string,
-    options?: { preserveEditor?: boolean },
-  ) {
-    const editorIsDirty = template
-      ? subject !== template.subject ||
-        previewLine !== (template.preview_line ?? "") ||
-        contentMarkdown !== template.content_markdown
-      : Boolean(subject || previewLine || contentMarkdown);
-
-    setTemplate(nextTemplate);
-    if (!options?.preserveEditor || !editorIsDirty) {
-      setSubject(nextTemplate.subject);
-      setPreviewLine(nextTemplate.preview_line ?? "");
-      setContentMarkdown(nextTemplate.content_markdown);
-    }
-    if (defaultRecipient && !recipientEmail) {
-      setRecipientEmail(defaultRecipient);
-    }
-  }
+  const hasAnyDraft = contacts.some((contact) =>
+    contact.drafts.some((draft) => draft.channel === "email"),
+  );
+  const hasValidEmailContact = contacts.some((contact) => isValidEmail(contact.email));
+  const selectedDraftHighlights = getDraftHighlights(selectedDraft, selectedChannel);
 
   async function syncPage(options?: { silent?: boolean; preserveInputs?: boolean }) {
     try {
-      const [companyPayload, gmailPayload, campaignPayload, jobPayload, templatePayload] =
+      const [companyPayload, contactsPayload, gmailPayload, campaignPayload, jobPayload] =
         await Promise.all([
           getCompany(companyId),
-          getGmailStatus().catch(() => ({ configured: false, connected: false })),
-          getCampaignContext().catch(() => ({ owner_key: "", brief: "" })),
-          getLatestGenerationJob(companyId).catch((err) => {
+          getCompanyContacts(companyId).catch((err) => {
             if (err instanceof ApiError && err.status === 404) {
-              return null;
+              return [];
             }
             throw err;
           }),
-          getTemplate(companyId).catch((err) => {
+          getGmailStatus().catch(() => ({ configured: false, connected: false })),
+          getCampaignContext().catch(() => ({ owner_key: "", brief: "" })),
+          getLatestGenerationJob(companyId).catch((err) => {
             if (err instanceof ApiError && err.status === 404) {
               return null;
             }
@@ -432,29 +511,20 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
       setGmailStatus(gmailPayload);
       setGlobalCampaignContext(campaignPayload.brief ?? "");
       setLatestJob(jobPayload);
+      setContacts(contactsPayload);
 
       if (!options?.preserveInputs || !hasUnsavedOverride) {
         setCompanyCampaignOverride(companyPayload.campaign_context_override ?? "");
       }
-      if (!options?.preserveInputs || !recipientEmail) {
-        setRecipientEmail(companyPayload.contact_email ?? "");
-      }
 
-      if (templatePayload) {
-        applyTemplate(templatePayload, companyPayload.contact_email ?? "", {
-          preserveEditor: options?.preserveInputs,
-        });
-      } else if (!options?.preserveInputs) {
-        setTemplate(null);
-        setSubject("");
-        setPreviewLine("");
-        setContentMarkdown("");
+      if (!selectedContactId || !contactsPayload.some((contact) => contact.id === selectedContactId)) {
+        setSelectedContactId(contactsPayload[0]?.id ?? null);
       }
 
       setError(null);
     } catch (err) {
       if (!options?.silent) {
-        setError(err instanceof ApiError ? err.message : "Could not load company detail.");
+        setError(err instanceof ApiError ? err.message : "Could not load the sponsor record.");
       }
     } finally {
       setInitialLoading(false);
@@ -522,17 +592,49 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
         );
         setNotice(
           mode === "generate"
-            ? "Background generation started. You can leave this page and come back later."
-            : "Background regeneration started. The current saved draft stays available while the refresh runs.",
+            ? "Background generation started. Each contact will get an email draft and a LinkedIn message."
+            : "Background regeneration started. Existing drafts stay available until the refreshed versions are saved.",
         );
       } catch (err) {
         setError(
           err instanceof ApiError
             ? err.message
             : mode === "generate"
-              ? "Could not start generation."
+              ? "Could not start background generation."
               : "Could not start regeneration.",
         );
+      }
+    });
+  }
+
+  async function handleCancelJob() {
+    if (!latestJob) {
+      return;
+    }
+
+    await runAction("cancelJob", async () => {
+      try {
+        const job = await cancelGenerationJob(latestJob.id);
+        setLatestJob(job);
+        setCompany((currentCompany) =>
+          currentCompany
+            ? {
+                ...currentCompany,
+                generation_status: job.status,
+                generation_progress_percent: job.progress_percent,
+                generation_current_step: job.current_step,
+                generation_error_message: job.error_message,
+                latest_generation_job_id: job.id,
+              }
+            : currentCompany,
+        );
+        setNotice(
+          job.status === "cancelled"
+            ? "The queued run was cancelled."
+            : "Cancellation requested. The worker will stop this run after the current stage finishes.",
+        );
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Could not stop the current run.");
       }
     });
   }
@@ -559,41 +661,52 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
     });
   }
 
-  async function handleSaveTemplate() {
-    await runAction("save", async () => {
+  async function handleSaveDraft() {
+    if (!selectedContact) {
+      return;
+    }
+
+    await runAction("saveDraft", async () => {
       try {
-        const saved = await updateTemplate(companyId, {
-          subject,
-          preview_line: previewLine,
+        const saved = await updateContactDraft(selectedContact.id, selectedChannel, {
+          subject: selectedChannel === "email" ? subject : null,
+          preview_line: selectedChannel === "email" ? previewLine : null,
           content_markdown: contentMarkdown,
           content_html: markdownToHtml(contentMarkdown),
         });
-        applyTemplate(saved, recipientEmail);
-        setNotice("Draft saved.");
+        setContacts((currentContacts) => patchDraftIntoContacts(currentContacts, saved));
+        setNotice(
+          selectedChannel === "email"
+            ? "Email draft saved."
+            : "LinkedIn message saved.",
+        );
       } catch (err) {
-        setError(err instanceof ApiError ? err.message : "Could not save the draft.");
+        setError(err instanceof ApiError ? err.message : "Could not save the selected draft.");
       }
     });
   }
 
   function handleResetDraft() {
-    if (!template) {
-      return;
-    }
-    setSubject(template.subject);
-    setPreviewLine(template.preview_line ?? "");
-    setContentMarkdown(template.content_markdown);
+    setSubject(selectedDraft?.subject ?? "");
+    setPreviewLine(selectedDraft?.preview_line ?? "");
+    setContentMarkdown(selectedDraft?.content_markdown ?? "");
     setNotice("Draft reset to the last saved version.");
     setError(null);
   }
 
   function handleResetOverride() {
     setCompanyCampaignOverride("");
-    setNotice("Company override cleared locally. Save the brief to make the global brief active again.");
+    setNotice(
+      "Company override cleared locally. Save the brief if you want this record to inherit the shared campaign brief again.",
+    );
     setError(null);
   }
 
   async function handleSend() {
+    if (!selectedContact || !selectedDraft || selectedChannel !== "email") {
+      return;
+    }
+
     await runAction("send", async () => {
       try {
         const encodedAttachments = await Promise.all(
@@ -605,6 +718,8 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
         );
         await sendEmail({
           company_id: companyId,
+          contact_id: selectedContact.id,
+          draft_id: selectedDraft.id,
           recipient_email: recipientEmail,
           subject,
           body_markdown: contentMarkdown,
@@ -635,23 +750,14 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
     }, 5000);
 
     return () => window.clearInterval(intervalId);
-  }, [
-    companyId,
-    jobIsActive,
-    companyCampaignOverride,
-    recipientEmail,
-    subject,
-    previewLine,
-    contentMarkdown,
-    company?.campaign_context_override,
-  ]);
+  }, [companyId, jobIsActive]);
 
   useEffect(() => {
     const currentStatus = latestJob?.status ?? null;
     const previousStatus = previousJobStatusRef.current;
     if (previousStatus && previousStatus !== currentStatus) {
       if (currentStatus === "completed") {
-        setNotice("Background draft is ready.");
+        setNotice("Fresh contact drafts are ready.");
         setActiveTab("draft");
         void syncPageEvent({ silent: true, preserveInputs: true });
       }
@@ -669,17 +775,48 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
     }
     if (jobIsActive) {
       setActiveTab("research");
-    } else if (template) {
+    } else if (hasAnyDraft) {
       setActiveTab("draft");
     } else {
       setActiveTab("overview");
     }
     initializedTabRef.current = true;
-  }, [initialLoading, jobIsActive, template]);
+  }, [initialLoading, jobIsActive, hasAnyDraft]);
+
+  useEffect(() => {
+    setSubject(selectedDraft?.subject ?? "");
+    setPreviewLine(selectedDraft?.preview_line ?? "");
+    setContentMarkdown(selectedDraft?.content_markdown ?? "");
+  }, [
+    selectedContactId,
+    selectedChannel,
+    selectedDraft?.id,
+    selectedDraft?.updated_at,
+    selectedDraft?.subject,
+    selectedDraft?.preview_line,
+    selectedDraft?.content_markdown,
+  ]);
+
+  useEffect(() => {
+    if (selectedContact?.email) {
+      setRecipientEmail(selectedContact.email);
+      return;
+    }
+    if (company?.contact_email) {
+      setRecipientEmail(company.contact_email);
+    }
+  }, [selectedContact?.id, selectedContact?.email, company?.contact_email]);
 
   if (initialLoading && !company) {
     return <CompanyDetailSkeleton />;
   }
+
+  const contactSelectorItems = contacts.map((contact) => ({
+    id: contact.id,
+    label: getContactLabel(contact),
+    description: getContactSubLabel(contact),
+    hasDrafts: contact.drafts.length > 0,
+  }));
 
   return (
     <div className="space-y-5">
@@ -708,14 +845,17 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
               Sponsor Record
             </p>
             <h2 className="mt-3 font-display text-4xl leading-tight lg:text-5xl">
-              {company?.name ?? "Loading company..."}
+              {company?.name ?? "Loading sponsor record..."}
             </h2>
             <div className="mt-4 flex flex-wrap gap-2">
               <Badge tone={statusTone(company?.status)}>{company?.status ?? "Unknown"}</Badge>
               {company?.tier ? <Badge>{company.tier}</Badge> : null}
-              <Badge tone={template ? "success" : "muted"}>
-                {template ? "Draft ready" : "No draft"}
+              <Badge tone={hasAnyDraft ? "success" : "muted"}>
+                {hasAnyDraft ? `${company?.draft_count ?? 0} email drafts` : "No drafts"}
               </Badge>
+              {company?.latest_generation_trigger ? (
+                <Badge>{jobTriggerLabel(company.latest_generation_trigger)}</Badge>
+              ) : null}
               {jobStatus ? (
                 <Badge tone={generationTone(jobStatus)} className="max-w-full">
                   <TruncatedText
@@ -730,19 +870,33 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
           <div className="flex flex-wrap gap-3 xl:justify-end">
             <Button variant="secondary" onClick={() => setBriefModalOpen(true)}>
               <FileText className="h-4 w-4" />
-              Context
+              Brief
             </Button>
             <Button
               variant="ghost"
-              disabled={!template}
+              disabled={!selectedDraft || selectedChannel !== "email"}
               onClick={() => setSendDrawerOpen(true)}
             >
               <Mail className="h-4 w-4" />
-              Send
+              Send Email
             </Button>
-            {!template ? (
+            {latestJob && jobIsActive ? (
               <Button
-                disabled={activeAction !== null || !company || jobIsActive}
+                variant="ghost"
+                disabled={activeAction !== null}
+                onClick={() => void handleCancelJob()}
+              >
+                {activeAction === "cancelJob" ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <StopCircle className="h-4 w-4" />
+                )}
+                {activeAction === "cancelJob" ? "Stopping..." : "Stop Run"}
+              </Button>
+            ) : null}
+            {!hasAnyDraft ? (
+              <Button
+                disabled={activeAction !== null || !company || jobIsActive || !hasValidEmailContact}
                 onClick={() => void handleQueueGenerate("generate")}
               >
                 {activeAction === "queueGenerate" ? (
@@ -750,11 +904,11 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
                 ) : (
                   <Sparkles className="h-4 w-4" />
                 )}
-                {activeAction === "queueGenerate" ? "Queueing..." : "Generate"}
+                {activeAction === "queueGenerate" ? "Queueing..." : "Generate Drafts"}
               </Button>
             ) : (
               <Button
-                disabled={activeAction !== null || jobIsActive}
+                disabled={activeAction !== null || jobIsActive || !hasValidEmailContact}
                 onClick={() => void handleQueueGenerate("regenerate")}
               >
                 {activeAction === "queueRegenerate" ? (
@@ -791,10 +945,15 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
       {notice ? (
         <Card className="border-success/30 bg-success/10 text-sm text-success">{notice}</Card>
       ) : null}
+      {!initialLoading && !hasValidEmailContact ? (
+        <Card className="border-warning/30 bg-warning/10 text-sm text-warning">
+          At least one contact with a valid email is required before this sponsor can enter the email generation queue. Let contact discovery finish or add a valid email contact first.
+        </Card>
+      ) : null}
       {initialLoading ? (
         <Card className="flex items-center gap-3 text-sm text-white/70">
           <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
-          Loading company profile, draft, and queue state...
+          Loading sponsor profile, contacts, and queue state...
         </Card>
       ) : null}
 
@@ -810,24 +969,16 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
           tone={generationTone(jobStatus)}
         />
         <MetricCard
-          label="Steps"
-          value={totalSteps ? `${completedSteps}/${totalSteps}` : "0/0"}
-          hint={
-            totalSteps
-              ? "Completed research and drafting stages in the latest run."
-              : "Step tracking appears after the first queued run."
-          }
-          tone={jobIsActive ? "warning" : totalSteps ? "success" : "muted"}
+          label="Contacts"
+          value={`${company?.contact_count ?? contacts.length}`}
+          hint="Every contact can carry its own email draft and LinkedIn message."
+          tone={contacts.length ? "success" : "warning"}
         />
         <MetricCard
-          label="Context"
-          value={companyCampaignOverride.trim() ? "Override" : "Global"}
-          hint={
-            companyCampaignOverride.trim()
-              ? "This company uses a dedicated angle instead of the shared dashboard brief."
-              : "This company inherits the shared campaign brief."
-          }
-          tone={companyCampaignOverride.trim() ? "warning" : "muted"}
+          label="Draft Packages"
+          value={`${company?.draft_count ?? 0}`}
+          hint="Saved email drafts across the current contact roster."
+          tone={hasAnyDraft ? "success" : "muted"}
         />
         <MetricCard
           label="Delivery"
@@ -857,7 +1008,7 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
           <Card>
             <div className="flex items-center justify-between gap-3">
-                <div>
+              <div>
                 <p className="text-xs uppercase tracking-[0.28em] text-white/45">Sponsor Profile</p>
                 <h3 className="mt-2 font-display text-3xl">Company profile</h3>
               </div>
@@ -871,22 +1022,22 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
                     <SnapshotRow label="Industry" value={company?.industry ?? "Not specified"} />
                     <SnapshotRow label="Website" value={siteLabel ?? company?.website ?? "None"} />
                     <SnapshotRow
-                      label="Contact"
-                      value={
-                        company?.contact_email ??
-                        company?.contact_details ??
-                        "No contact details captured"
-                      }
+                      label="Primary Contact"
+                      value={selectedContact ? getContactLabel(selectedContact) : "No contact captured"}
                       lines={2}
                     />
                     <SnapshotRow
                       label="Channel"
-                      value={company?.reach_channel ?? "No channel guidance yet"}
+                      value={selectedContact?.reach_channel ?? company?.reach_channel ?? "No channel guidance yet"}
                       lines={2}
                     />
                     <SnapshotRow
                       label="Phone / Address"
-                      value={company?.phone_or_address ?? "No phone or address captured"}
+                      value={
+                        selectedContact?.phone_or_address ??
+                        company?.phone_or_address ??
+                        "No phone or address captured"
+                      }
                       lines={2}
                     />
                     <SnapshotRow
@@ -900,123 +1051,155 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
             </div>
           </Card>
 
-          <div className="space-y-5">
-            <Card>
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <p className="text-xs uppercase tracking-[0.28em] text-white/45">Campaign Context</p>
-                  <h3 className="mt-2 font-display text-3xl">Global brief with company override</h3>
-                </div>
-                <Button variant="secondary" onClick={() => setBriefModalOpen(true)}>
-                  Edit Context
-                </Button>
+          <Card>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Contact Roster</p>
+                <h3 className="mt-2 font-display text-3xl">Choose the outreach recipient</h3>
               </div>
+              <Badge tone={contacts.length ? "success" : "warning"}>
+                {contacts.length} contact{contacts.length === 1 ? "" : "s"}
+              </Badge>
+            </div>
 
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
-                <div className="rounded-[22px] border border-line bg-white/[0.03] p-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-white/45">Global brief</p>
-                  <TruncatedText
-                    text={
-                      globalCampaignContext ||
-                      "No shared campaign brief has been saved on the dashboard yet."
-                    }
-                    lines={3}
-                    className="mt-3 text-sm leading-6 text-white/68"
-                  />
-                </div>
-                <div className="rounded-[22px] border border-line bg-white/[0.03] p-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-white/45">
-                    Company override
-                  </p>
-                  <TruncatedText
-                    text={
-                      companyCampaignOverride.trim() ||
-                      "Blank, which means this company currently inherits the shared dashboard brief."
-                    }
-                    lines={3}
-                    className="mt-3 text-sm leading-6 text-white/68"
-                  />
-                </div>
-              </div>
-            </Card>
-
-            <Card>
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs uppercase tracking-[0.28em] text-white/45">Strategic Fit</p>
-                  <h3 className="mt-2 font-display text-3xl">Why this sponsor is a strong match</h3>
-                </div>
-                <Badge tone={template ? "success" : "muted"}>
-                  {template ? "Ready" : "Waiting"}
-                </Badge>
-              </div>
-
-              {unifiedContext ? (
-                <div className="mt-5 space-y-4">
-                  <div className="rounded-[22px] border border-line bg-white/[0.03] p-4">
-                    <TruncatedText
-                      text={unifiedContext.executive_summary}
-                      lines={3}
-                      className="text-sm leading-7 text-white/72"
-                    />
-                  </div>
-                  <div className="rounded-[22px] border border-line bg-white/[0.03] p-4">
-                    <p className="text-xs uppercase tracking-[0.24em] text-white/45">
-                      Recommended ask
-                    </p>
-                    <TruncatedText
-                      text={unifiedContext.recommended_ask}
-                      lines={3}
-                      className="mt-3 text-sm leading-6 text-white/72"
-                    />
-                  </div>
-                </div>
+            <div className="mt-5 grid gap-3">
+              {contacts.length ? (
+                contacts.map((contact) => {
+                  const contactEmailDraft = getContactDraft(contact, "email");
+                  const contactLinkedinDraft = getContactDraft(contact, "linkedin");
+                  const active = contact.id === selectedContact?.id;
+                  return (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      onClick={() => setSelectedContactId(contact.id)}
+                      className={`rounded-[22px] border px-4 py-4 text-left transition ${
+                        active
+                          ? "border-accent bg-accent/10"
+                          : "border-line bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.05]"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <TruncatedText
+                            text={getContactLabel(contact)}
+                            className="font-medium text-white"
+                          />
+                          <TruncatedText
+                            text={getContactSubLabel(contact)}
+                            className="mt-2 text-sm leading-6 text-white/58"
+                            lines={2}
+                          />
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          {contact.is_primary ? <Badge tone="warning">Primary</Badge> : null}
+                          <Badge
+                            tone={
+                              contactEmailDraft
+                                ? "success"
+                                : contact.email
+                                  ? "warning"
+                                  : "muted"
+                            }
+                          >
+                            {contactEmailDraft
+                              ? "Email draft ready"
+                              : contact.email
+                                ? "Email on file"
+                                : "No email on file"}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2 text-xs text-white/48">
+                        <span>{contactLinkedinDraft ? "LinkedIn ready" : "LinkedIn pending"}</span>
+                        {contact.linkedin_url ? <span>LinkedIn profile captured</span> : null}
+                      </div>
+                    </button>
+                  );
+                })
               ) : (
-                <div className="mt-5 rounded-[22px] border border-dashed border-line bg-white/[0.03] p-5 text-sm leading-7 text-white/60">
-                  Queue generation to populate the fit summary, recommended ask, and structured research notes.
+                <div className="rounded-[22px] border border-dashed border-line bg-white/[0.03] p-5 text-sm leading-7 text-white/60">
+                  No contact records were imported for this company yet. Re-import the workbook after applying the latest migration.
                 </div>
               )}
-            </Card>
-          </div>
-
-          <Card>
-            <p className="text-xs uppercase tracking-[0.28em] text-white/45">Research Highlights</p>
-            <h3 className="mt-2 font-display text-3xl">Key alignment signals</h3>
-            <div className="mt-5 space-y-3">
-              <InsightAccordion
-                title="Alignment points"
-                items={unifiedContext?.alignment_points ?? []}
-                emptyLabel="No alignment points yet."
-                defaultOpen
-              />
-              <InsightAccordion
-                title="Personalization angles"
-                items={unifiedContext?.personalization_angles ?? []}
-                emptyLabel="No personalization angles yet."
-              />
-              <InsightAccordion
-                title="Risk flags"
-                items={unifiedContext?.risk_flags ?? []}
-                emptyLabel="No risk flags yet."
-              />
             </div>
           </Card>
 
           <Card>
-            <p className="text-xs uppercase tracking-[0.28em] text-white/45">Recommended Action</p>
-            <h3 className="mt-2 font-display text-3xl">Keep the next step clear</h3>
-            <div className="mt-5 grid gap-3">
-              <div className="rounded-[20px] border border-line bg-white/[0.03] px-4 py-4 text-sm leading-6 text-white/68">
-                {template
-                  ? "Open the draft tab to tighten the wording, then use the send drawer when the message is ready."
-                  : "Start with Generate so the research pipeline can build a first draft in the background."}
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Campaign Brief</p>
+                <h3 className="mt-2 font-display text-3xl">Global brief with company override</h3>
               </div>
-              <div className="rounded-[20px] border border-line bg-white/[0.03] px-4 py-4 text-sm leading-6 text-white/68">
-                {jobIsActive
-                  ? "The research tab will keep updating every few seconds while the current run is active."
-                  : "The research tab stores the last run, so you can leave and come back later without losing context."}
+              <Button variant="secondary" onClick={() => setBriefModalOpen(true)}>
+                Edit Brief
+              </Button>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div className="rounded-[22px] border border-line bg-white/[0.03] p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-white/45">Global brief</p>
+                <TruncatedText
+                  text={
+                    globalCampaignContext ||
+                    "No shared campaign brief has been saved on the dashboard yet."
+                  }
+                  lines={3}
+                  className="mt-3 text-sm leading-6 text-white/68"
+                />
+              </div>
+              <div className="rounded-[22px] border border-line bg-white/[0.03] p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-white/45">
+                  Company override
+                </p>
+                <TruncatedText
+                  text={
+                    companyCampaignOverride.trim() ||
+                    "Blank, which means this company currently inherits the shared dashboard brief."
+                  }
+                  lines={3}
+                  className="mt-3 text-sm leading-6 text-white/68"
+                />
               </div>
             </div>
+          </Card>
+
+          <Card>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Strategic Fit</p>
+                <h3 className="mt-2 font-display text-3xl">Why the selected recipient is a strong fit</h3>
+              </div>
+              <Badge tone={selectedDraft ? "success" : "muted"}>
+                {selectedDraft ? "Context ready" : "Waiting"}
+              </Badge>
+            </div>
+
+            {unifiedContext ? (
+              <div className="mt-5 space-y-4">
+                <div className="rounded-[22px] border border-line bg-white/[0.03] p-4">
+                  <TruncatedText
+                    text={unifiedContext.executive_summary}
+                    lines={3}
+                    className="text-sm leading-7 text-white/72"
+                  />
+                </div>
+                <div className="rounded-[22px] border border-line bg-white/[0.03] p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-white/45">
+                    Recommended ask
+                  </p>
+                  <TruncatedText
+                    text={unifiedContext.recommended_ask}
+                    lines={3}
+                    className="mt-3 text-sm leading-6 text-white/72"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="mt-5 rounded-[22px] border border-dashed border-line bg-white/[0.03] p-5 text-sm leading-7 text-white/60">
+                Queue generation to populate the fit summary, the recipient-specific hook, and the recommendation logic.
+              </div>
+            )}
           </Card>
         </div>
       ) : null}
@@ -1063,13 +1246,13 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
                     {completedSteps}/{totalSteps || 0}
                   </p>
                   <p className="mt-2 text-sm leading-6 text-white/58">
-                    Completed stages in the last queued run.
+                    Completed stages in the latest queued run.
                   </p>
                 </div>
               </div>
             ) : (
               <div className="mt-5 rounded-[24px] border border-dashed border-line bg-white/[0.03] p-6 text-sm leading-7 text-white/60">
-                No background run has started yet. Use Generate or Regenerate from the header when you are ready.
+                No background run has started yet. Use Generate Drafts or Regenerate from the header when you are ready.
               </div>
             )}
           </Card>
@@ -1079,7 +1262,7 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
               <p className="text-xs uppercase tracking-[0.28em] text-white/45">Stage Detail</p>
               <h3 className="mt-2 font-display text-3xl">Detailed stage log</h3>
               <p className="mt-3 text-sm leading-6 text-white/58">
-                Each panel gives a short explanation, surfaced findings, and source links without exposing hidden reasoning.
+                Each panel explains what the pipeline surfaced without exposing hidden reasoning.
               </p>
               <div className="mt-5 space-y-3">
                 {latestJob.steps.map((step) => (
@@ -1094,19 +1277,19 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
       {activeTab === "draft" ? (
         <div className="space-y-5">
           <Card>
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
-                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Outreach Draft</p>
-                <h3 className="mt-2 font-display text-3xl">Edit, review, and prepare delivery</h3>
+                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Recipient Workspace</p>
+                <h3 className="mt-2 font-display text-3xl">Choose the contact and outreach channel</h3>
               </div>
               <div className="flex flex-wrap gap-3">
                 <Button variant="secondary" onClick={() => setBriefModalOpen(true)}>
                   <FileText className="h-4 w-4" />
-                  Context
+                  Brief
                 </Button>
                 <Button
                   variant="ghost"
-                  disabled={!template || !hasUnsavedDraft}
+                  disabled={!selectedDraft || !hasUnsavedDraft}
                   onClick={handleResetDraft}
                 >
                   <RotateCcw className="h-4 w-4" />
@@ -1114,197 +1297,285 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
                 </Button>
                 <Button
                   variant={hasUnsavedDraft ? "primary" : "secondary"}
-                  disabled={activeAction !== null || !template}
-                  onClick={() => void handleSaveTemplate()}
+                  disabled={activeAction !== null || !selectedContact || !selectedDraft}
+                  onClick={() => void handleSaveDraft()}
                 >
-                  {activeAction === "save" ? (
+                  {activeAction === "saveDraft" ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                   ) : (
                     <Save className="h-4 w-4" />
                   )}
-                  {activeAction === "save" ? "Saving..." : "Save Draft"}
+                  {activeAction === "saveDraft" ? "Saving..." : "Save Draft"}
                 </Button>
-                <Button disabled={!template} onClick={() => setSendDrawerOpen(true)}>
+                <Button
+                  disabled={!selectedDraft || selectedChannel !== "email"}
+                  onClick={() => setSendDrawerOpen(true)}
+                >
                   <Send className="h-4 w-4" />
-                  Send
+                  Send Email
                 </Button>
               </div>
             </div>
 
-            {!template ? (
-              <div className="mt-5 rounded-[24px] border border-dashed border-line bg-white/[0.03] p-6 text-sm leading-7 text-white/60">
-                There is no completed draft yet. Queue generation from the header, or wait for the current background job to finish.
+            <div className="mt-6 space-y-4">
+              <div>
+                <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.24em] text-white/45">
+                  <Users2 className="h-4 w-4" />
+                  Contacts
+                </div>
+                {contactSelectorItems.length ? (
+                  <div className="flex gap-3 overflow-x-auto pb-2">
+                    {contactSelectorItems.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setSelectedContactId(item.id)}
+                        className={`min-w-[240px] rounded-[22px] border px-4 py-4 text-left transition ${
+                          item.id === selectedContact?.id
+                            ? "border-accent bg-accent/10"
+                            : "border-line bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.05]"
+                        }`}
+                      >
+                        <TruncatedText text={item.label} className="font-medium text-white" />
+                        <TruncatedText
+                          text={item.description}
+                          lines={2}
+                          className="mt-2 text-sm leading-6 text-white/58"
+                        />
+                        <div className="mt-3">
+                          <Badge tone={item.hasDrafts ? "success" : "muted"}>
+                            {item.hasDrafts ? "Drafts ready" : "Awaiting drafts"}
+                          </Badge>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-[22px] border border-dashed border-line bg-white/[0.03] p-5 text-sm leading-7 text-white/60">
+                    No imported contacts are available yet for this sponsor record.
+                  </div>
+                )}
               </div>
-            ) : null}
+
+              <TabsBar
+                items={[
+                  { id: "email", label: "Email", icon: <Mail className="h-4 w-4" /> },
+                  { id: "linkedin", label: "LinkedIn", icon: <Linkedin className="h-4 w-4" /> },
+                ]}
+                value={selectedChannel}
+                onChange={(nextValue) => setSelectedChannel(nextValue as ChannelTab)}
+              />
+            </div>
           </Card>
 
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.04fr)_minmax(0,0.96fr)]">
-            <Card>
-              <p className="text-xs uppercase tracking-[0.28em] text-white/45">Editor</p>
-              <div className="mt-5 grid gap-5">
-                <div>
-                  <FieldLabel htmlFor="subject">Subject</FieldLabel>
-                  <Input
-                    id="subject"
-                    placeholder="Subject line"
-                    value={subject}
-                    onChange={(event) => setSubject(event.target.value)}
-                  />
-                </div>
-
-                <div>
-                  <FieldLabel htmlFor="preview-line">Preview line</FieldLabel>
-                  <Input
-                    id="preview-line"
-                    placeholder="Short preview line"
-                    value={previewLine}
-                    onChange={(event) => setPreviewLine(event.target.value)}
-                  />
-                </div>
-
-                <div>
-                  <FieldLabel htmlFor="email-body">Email body</FieldLabel>
-                  <Textarea
-                    id="email-body"
-                    className="min-h-[480px]"
-                    placeholder="The generated draft will appear here."
-                    value={contentMarkdown}
-                    onChange={(event) => setContentMarkdown(event.target.value)}
-                  />
-                </div>
-              </div>
+          {!selectedContact ? (
+            <Card className="rounded-[24px] border border-dashed border-line bg-white/[0.03] p-6 text-sm leading-7 text-white/60">
+              This company does not have any imported contacts yet, so no personalized outreach package can be shown.
             </Card>
-
-            <div className="space-y-5">
+          ) : !selectedDraft ? (
+            <Card className="rounded-[24px] border border-dashed border-line bg-white/[0.03] p-6 text-sm leading-7 text-white/60">
+              There is no saved {selectedChannel === "email" ? "email draft" : "LinkedIn message"} for {getContactLabel(selectedContact)} yet. Queue generation or regenerate the company record to build it.
+            </Card>
+          ) : (
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.04fr)_minmax(0,0.96fr)]">
               <Card>
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs uppercase tracking-[0.28em] text-white/45">Preview</p>
-                  <Badge tone={hasUnsavedDraft ? "warning" : "success"}>
-                    {hasUnsavedDraft ? "Unsaved edits" : "Saved"}
-                  </Badge>
-                </div>
-                <h4 className="mt-3 font-display text-2xl">{subject || "Untitled subject"}</h4>
-                {previewLine ? (
-                  <TruncatedText
-                    text={previewLine}
-                    lines={2}
-                    className="mt-2 text-sm leading-6 text-white/55"
-                  />
-                ) : null}
-                <div className="mt-4 rounded-[20px] border border-line bg-white/[0.03] px-4 py-3 text-sm leading-6 text-white/62">
-                  The pipeline now applies a final humanizer step, pushes for a stronger cold-email hook, keeps the draft shorter, and strips em dashes from the finished version.
-                </div>
-                <div className="mt-5 max-h-[560px] overflow-y-auto rounded-[22px] border border-line bg-white/[0.03] p-5">
-                  <div
-                    className="prose prose-invert max-w-none text-sm leading-7"
-                    dangerouslySetInnerHTML={{ __html: previewHtml }}
-                  />
+                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Editor</p>
+                <div className="mt-5 grid gap-5">
+                  {selectedChannel === "email" ? (
+                    <>
+                      <div>
+                        <FieldLabel htmlFor="subject">Subject</FieldLabel>
+                        <Input
+                          id="subject"
+                          placeholder="Subject line"
+                          value={subject}
+                          onChange={(event) => setSubject(event.target.value)}
+                        />
+                      </div>
+
+                      <div>
+                        <FieldLabel htmlFor="preview-line">Preview line</FieldLabel>
+                        <Input
+                          id="preview-line"
+                          placeholder="Short preview line"
+                          value={previewLine}
+                          onChange={(event) => setPreviewLine(event.target.value)}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-[20px] border border-line bg-white/[0.03] px-4 py-4 text-sm leading-6 text-white/62">
+                      LinkedIn messages stay subject-free and shorter by design. Keep the note crisp, personal, and easy to reply to.
+                    </div>
+                  )}
+
+                  <div>
+                    <FieldLabel htmlFor="message-body">
+                      {selectedChannel === "email" ? "Email body" : "LinkedIn message"}
+                    </FieldLabel>
+                    <Textarea
+                      id="message-body"
+                      className="min-h-[520px]"
+                      placeholder="The generated draft will appear here."
+                      value={contentMarkdown}
+                      onChange={(event) => setContentMarkdown(event.target.value)}
+                    />
+                  </div>
                 </div>
               </Card>
 
-              <Card>
-                <p className="text-xs uppercase tracking-[0.28em] text-white/45">Campaign Context</p>
-                <div className="mt-4 rounded-[22px] border border-line bg-white/[0.03] p-4">
-                  <p className="text-sm font-medium text-white">
-                    {companyCampaignOverride.trim()
-                      ? "This draft is using the company override."
-                      : "This draft is using the shared dashboard brief."}
+              <div className="space-y-5">
+                <Card>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs uppercase tracking-[0.28em] text-white/45">Preview</p>
+                    <Badge tone={hasUnsavedDraft ? "warning" : "success"}>
+                      {hasUnsavedDraft ? "Unsaved edits" : "Saved"}
+                    </Badge>
+                  </div>
+                  {selectedChannel === "email" ? (
+                    <>
+                      <h4 className="mt-3 font-display text-2xl">
+                        {subject || "Untitled subject"}
+                      </h4>
+                      {previewLine ? (
+                        <TruncatedText
+                          text={previewLine}
+                          lines={2}
+                          className="mt-2 text-sm leading-6 text-white/55"
+                        />
+                      ) : null}
+                    </>
+                  ) : (
+                    <h4 className="mt-3 font-display text-2xl">LinkedIn message</h4>
+                  )}
+                  <div className="mt-4 rounded-[20px] border border-line bg-white/[0.03] px-4 py-3 text-sm leading-6 text-white/62">
+                    The pipeline now writes one outreach package per contact, keeps the hook stronger, avoids em dashes, and separates Email from LinkedIn so both can feel native to the channel.
+                  </div>
+                  <div className="mt-5 max-h-[560px] overflow-y-auto rounded-[22px] border border-line bg-white/[0.03] p-5">
+                    <div
+                      className="prose prose-invert max-w-none text-sm leading-7"
+                      dangerouslySetInnerHTML={{ __html: previewHtml }}
+                    />
+                  </div>
+                </Card>
+
+                <Card>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs uppercase tracking-[0.28em] text-white/45">
+                        Personalization Anchors
+                      </p>
+                      <h4 className="mt-2 font-display text-2xl">Why this note should feel specific</h4>
+                    </div>
+                    <Badge tone="success">{selectedChannel}</Badge>
+                  </div>
+                  <div className="mt-5 space-y-3">
+                    {selectedDraftHighlights.length ? (
+                      selectedDraftHighlights.map((item) => (
+                        <div
+                          key={item}
+                          className="rounded-[18px] border border-line bg-white/[0.03] px-4 py-3 text-sm leading-6 text-white/72"
+                        >
+                          {item}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-[18px] border border-dashed border-line bg-white/[0.03] px-4 py-3 text-sm leading-6 text-white/60">
+                        Personalization cues will appear here once the pipeline surfaces them for this contact.
+                      </div>
+                    )}
+                  </div>
+                </Card>
+
+                <Card>
+                  <p className="text-xs uppercase tracking-[0.28em] text-white/45">Selected Contact</p>
+                  <h4 className="mt-2 font-display text-2xl">{getContactLabel(selectedContact)}</h4>
+                  <p className="mt-3 text-sm leading-6 text-white/62">
+                    {getContactSubLabel(selectedContact)}
                   </p>
-                  <TruncatedText
-                    text={
-                      effectiveCampaignBrief ||
-                      "No campaign brief is saved yet. Open the brief modal to add one."
-                    }
-                    lines={3}
-                    className="mt-3 text-sm leading-6 text-white/65"
-                  />
-                </div>
-                <div className="mt-4 rounded-[22px] border border-line bg-white/[0.03] p-4">
-                  <p className="text-sm font-medium text-white">Current recipient</p>
-                  <TruncatedText
-                    text={recipientEmail || "No recipient set yet"}
-                    className="mt-3 text-sm text-white/65"
-                  />
-                </div>
-              </Card>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {selectedContact.is_primary ? <Badge tone="warning">Primary</Badge> : null}
+                    {selectedContact.linkedin_url ? <Badge>LinkedIn profile</Badge> : null}
+                    {selectedContact.email ? <Badge tone="success">Email available</Badge> : null}
+                  </div>
+                </Card>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       ) : null}
 
       <Modal
         open={briefModalOpen}
+        title="Campaign Brief for This Sponsor"
+        description="Use the global brief by default, or save a company-specific override when this sponsor needs a different angle."
         onClose={() => setBriefModalOpen(false)}
-        title="Campaign Context"
-        description="The dashboard brief is the default for every company. Use the override only when this specific sponsor needs a different angle."
         footer={
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap justify-between gap-3">
             <Button variant="ghost" onClick={handleResetOverride}>
               <RotateCcw className="h-4 w-4" />
-              Reset Override
+              Reset
             </Button>
             <div className="flex flex-wrap gap-3">
-              <Button variant="ghost" onClick={() => setBriefModalOpen(false)}>
+              <Button variant="secondary" onClick={() => setBriefModalOpen(false)}>
                 Close
               </Button>
-              <Button disabled={activeAction !== null} onClick={() => void handleSaveOverride()}>
+              <Button
+                disabled={activeAction !== null || !hasUnsavedOverride}
+                onClick={() => void handleSaveOverride()}
+              >
                 {activeAction === "saveOverride" ? (
                   <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : (
                   <Save className="h-4 w-4" />
                 )}
-                {activeAction === "saveOverride" ? "Saving..." : "Save Company Override"}
+                {activeAction === "saveOverride" ? "Saving..." : "Save Override"}
               </Button>
             </div>
           </div>
         }
       >
         <div className="grid gap-5">
-          <div>
-            <FieldLabel htmlFor="global-brief">Global brief</FieldLabel>
-            <Textarea
-              id="global-brief"
-              className="min-h-[180px]"
-              readOnly
-              value={
-                globalCampaignContext ||
-                "No global brief has been saved on the dashboard yet."
-              }
-            />
+          <div className="rounded-[24px] border border-line bg-white/[0.03] p-5">
+            <p className="text-xs uppercase tracking-[0.24em] text-white/45">Active brief</p>
+            <p className="mt-3 text-sm leading-7 text-white/68">
+              {effectiveCampaignBrief ||
+                "There is no shared or company-specific brief yet. Add one so the pipeline knows what the program is solving and why sponsorship matters."}
+            </p>
           </div>
+
           <div>
             <FieldLabel htmlFor="company-brief">Company override</FieldLabel>
             <Textarea
               id="company-brief"
-              className="min-h-[220px]"
-              placeholder="Leave blank to inherit the shared dashboard brief. Add company-specific program context only when needed."
               value={companyCampaignOverride}
               onChange={(event) => setCompanyCampaignOverride(event.target.value)}
+              placeholder="Add a company-specific angle if this sponsor needs a more tailored context than the shared dashboard brief."
             />
-          </div>
-          <div className="rounded-[22px] border border-line bg-white/[0.03] p-4 text-sm leading-7 text-white/60">
-            The effective context is what the agents read during research and drafting. Long text stays in this modal so the main page stays easier to scan.
           </div>
         </div>
       </Modal>
 
       <Drawer
         open={sendDrawerOpen}
+        title="Send Email Draft"
+        description={
+          selectedContact
+            ? `Send the selected email draft to ${getContactLabel(selectedContact)}.`
+            : "Send the selected email draft."
+        }
         onClose={() => setSendDrawerOpen(false)}
-        title="Send Outreach"
-        description="Delivery lives in a drawer so you can check recipients, attachments, and the final message without losing your place in the editor."
         footer={
-          <div className="flex flex-wrap justify-between gap-3">
-            <Link href="/settings/gmail" className={buttonStyles("secondary")}>
-              Manage Gmail
-            </Link>
+          <div className="flex flex-wrap justify-end gap-3">
+            <Button variant="secondary" onClick={() => setSendDrawerOpen(false)}>
+              Close
+            </Button>
             <Button
               disabled={
                 activeAction !== null ||
-                !gmailStatus?.connected ||
-                !recipientEmail ||
-                !subject ||
-                !contentMarkdown
+                selectedChannel !== "email" ||
+                !selectedDraft ||
+                !recipientEmail.trim()
               }
               onClick={() => void handleSend()}
             >
@@ -1313,66 +1584,46 @@ export function CompanyDetailClient({ companyId }: { companyId: string }) {
               ) : (
                 <Send className="h-4 w-4" />
               )}
-              {activeAction === "send" ? "Sending..." : "Send via Gmail"}
+              {activeAction === "send" ? "Sending..." : "Send Email"}
             </Button>
           </div>
         }
       >
-        <div className="space-y-5">
-          <div className="rounded-[24px] border border-line bg-white/[0.03] p-4 text-sm leading-7 text-white/68">
-            {gmailStatus?.connected
-              ? `Connected as ${gmailStatus.email ?? "your Gmail account"}.`
-              : "Gmail is not connected yet. Visit Gmail settings before sending."}
-          </div>
-
+        <div className="grid gap-5">
           <div>
-            <FieldLabel htmlFor="recipient">Recipient email</FieldLabel>
+            <FieldLabel htmlFor="recipient-email">Recipient email</FieldLabel>
             <Input
-              id="recipient"
+              id="recipient-email"
               value={recipientEmail}
               onChange={(event) => setRecipientEmail(event.target.value)}
-              placeholder="partnerships@company.com"
+              placeholder="recipient@company.com"
             />
           </div>
 
           <div>
-            <FieldLabel htmlFor="attachments">Attachments</FieldLabel>
+            <FieldLabel htmlFor="attachment-upload">Attachments</FieldLabel>
             <Input
-              id="attachments"
+              id="attachment-upload"
               type="file"
               multiple
               onChange={(event) => setAttachments(Array.from(event.target.files ?? []))}
             />
             {attachments.length ? (
-              <div className="mt-3 flex flex-col gap-2">
-                {attachments.map((attachment) => (
-                  <div
-                    key={`${attachment.name}-${attachment.size}`}
-                    className="rounded-[18px] border border-line bg-white/[0.03] px-3 py-2 text-sm text-white/70"
-                  >
-                    <TruncatedText text={attachment.name} />
-                  </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {attachments.map((file) => (
+                  <Badge key={file.name}>{file.name}</Badge>
                 ))}
               </div>
-            ) : null}
+            ) : (
+              <p className="mt-3 text-sm text-white/45">No attachments selected.</p>
+            )}
           </div>
 
           <div className="rounded-[24px] border border-line bg-white/[0.03] p-5">
-            <p className="text-xs uppercase tracking-[0.24em] text-white/45">Final draft</p>
-            <h4 className="mt-3 font-display text-2xl">{subject || "Untitled subject"}</h4>
-            {previewLine ? (
-              <TruncatedText
-                text={previewLine}
-                lines={2}
-                className="mt-2 text-sm leading-6 text-white/55"
-              />
-            ) : null}
-            <div className="mt-5 max-h-[360px] overflow-y-auto rounded-[20px] border border-line bg-white/[0.03] p-4">
-              <div
-                className="prose prose-invert max-w-none text-sm leading-7"
-                dangerouslySetInnerHTML={{ __html: previewHtml }}
-              />
-            </div>
+            <p className="text-xs uppercase tracking-[0.24em] text-white/45">Selected draft</p>
+            <p className="mt-3 text-sm leading-7 text-white/68">
+              {subject || "Untitled subject"}
+            </p>
           </div>
         </div>
       </Drawer>

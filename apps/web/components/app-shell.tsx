@@ -1,21 +1,22 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { type ReactNode, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
-import { useSyncExternalStore } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   ArrowUpRight,
   CircuitBoard,
   LayoutDashboard,
+  LoaderCircle,
   MailPlus,
   PanelLeftClose,
   PanelLeftOpen,
-  RotateCcw,
+  Trash2,
   Upload,
 } from "lucide-react";
 
-import { Button, Card, TruncatedText, buttonStyles } from "@/components/ui";
+import { ApiError, resetWorkspace } from "@/lib/api";
+import { Button, Card, Modal, TruncatedText, buttonStyles } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 const SIDEBAR_STORAGE_KEY = "ieee-sponsorship-sidebar-collapsed";
@@ -178,19 +179,16 @@ function notifySidebarPreferenceChange() {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const meta = pageMeta(pathname);
   const sidebarCollapsed = useSyncExternalStore(
     subscribeSidebarPreference,
     getSidebarSnapshot,
     () => false,
   );
-
-  function handleResetLayout() {
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(SIDEBAR_STORAGE_KEY);
-      notifySidebarPreferenceChange();
-    }
-  }
+  const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [resetPending, setResetPending] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
 
   function handleToggleSidebar() {
     if (typeof window === "undefined") {
@@ -201,6 +199,25 @@ export function AppShell({ children }: { children: ReactNode }) {
       sidebarCollapsed ? "false" : "true",
     );
     notifySidebarPreferenceChange();
+  }
+
+  async function handleResetWorkspace() {
+    try {
+      setResetPending(true);
+      setResetError(null);
+      await resetWorkspace();
+      setResetModalOpen(false);
+      router.push("/");
+      if (typeof window !== "undefined") {
+        window.location.assign("/");
+      }
+    } catch (error) {
+      setResetError(
+        error instanceof ApiError ? error.message : "Could not reset the workspace.",
+      );
+    } finally {
+      setResetPending(false);
+    }
   }
 
   return (
@@ -295,17 +312,20 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Button
               variant="ghost"
               className={cn("w-full justify-center", sidebarCollapsed && "px-0")}
-              onClick={handleResetLayout}
-              title="Reset layout"
+              onClick={() => {
+                setResetError(null);
+                setResetModalOpen(true);
+              }}
+              title="Reset workspace"
             >
-              <RotateCcw className="h-4 w-4" />
+              <Trash2 className="h-4 w-4" />
               <span
                 className={cn(
                   "overflow-hidden transition-[max-width,opacity] duration-300",
                   sidebarCollapsed ? "max-w-0 opacity-0" : "max-w-[120px] opacity-100",
                 )}
               >
-                Reset Layout
+                Reset Workspace
               </span>
             </Button>
 
@@ -415,6 +435,54 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </div>
+
+      <Modal
+        open={resetModalOpen}
+        title="Reset Current Workspace"
+        description="This clears the current owner workspace, including companies, contacts, drafts, queue history, notifications, campaign brief, and connected Gmail state."
+        onClose={() => {
+          if (!resetPending) {
+            setResetModalOpen(false);
+          }
+        }}
+        footer={
+          <div className="flex flex-wrap justify-end gap-3">
+            <Button
+              variant="secondary"
+              disabled={resetPending}
+              onClick={() => setResetModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              disabled={resetPending}
+              onClick={() => void handleResetWorkspace()}
+            >
+              {resetPending ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+              {resetPending ? "Resetting..." : "Clear Workspace"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-[22px] border border-danger/30 bg-danger/10 p-4 text-sm leading-7 text-danger">
+            This action is destructive. It removes the current workspace data so you can start from a clean set.
+          </div>
+          <div className="rounded-[22px] border border-line bg-white/[0.03] p-4 text-sm leading-7 text-white/68">
+            If background generation is still queued or running, the reset will be blocked until those jobs finish.
+          </div>
+          {resetError ? (
+            <div className="rounded-[22px] border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
+              {resetError}
+            </div>
+          ) : null}
+        </div>
+      </Modal>
     </div>
   );
 }

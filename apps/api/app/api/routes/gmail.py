@@ -92,7 +92,9 @@ def send_email(
         repo.log_email(
             owner_key,
             company_id=payload.company_id,
+            contact_id=payload.contact_id,
             template_id=template.id if template else None,
+            draft_id=payload.draft_id,
             recipient_email=payload.recipient_email,
             status="sent",
             gmail_message_id=message_id,
@@ -102,7 +104,9 @@ def send_email(
         repo.log_email(
             owner_key,
             company_id=payload.company_id,
+            contact_id=payload.contact_id,
             template_id=template.id if template else None,
+            draft_id=payload.draft_id,
             recipient_email=payload.recipient_email,
             status="failed",
             error_message=str(exc),

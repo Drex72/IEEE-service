@@ -8,14 +8,17 @@ from app.models.schemas import (
     BulkGenerationResponse,
     CampaignContextRecord,
     CampaignContextUpdateRequest,
+    CompanyContactsResponse,
     CompanyListResponse,
     CompanyRecord,
     CompanyUpdateRequest,
     DashboardSummary,
     GenerationJobRecord,
     NotificationListResponse,
+    QueueStateRecord,
     TemplateGenerationRequest,
     UploadResponse,
+    WorkspaceResetResponse,
 )
 from app.services.excel import ExcelSponsorTrackerParser
 from app.services.supabase import SupabaseRepository
@@ -23,6 +26,22 @@ from app.services.supabase import SupabaseRepository
 
 router = APIRouter(tags=["companies"])
 parser = ExcelSponsorTrackerParser()
+
+
+def ensure_generation_contact_ready(
+    repo: SupabaseRepository,
+    owner_key: str,
+    company_id: str,
+) -> None:
+    if repo.company_has_valid_email_contact(owner_key, company_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "At least one contact with a valid email is required before this company can enter the email generation queue. "
+            "Let contact discovery finish or add a valid email contact first."
+        ),
+    )
 
 
 @router.get("/companies", response_model=CompanyListResponse)
@@ -43,6 +62,18 @@ def get_company(
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
     return company
+
+
+@router.get("/companies/{company_id}/contacts", response_model=CompanyContactsResponse)
+def list_company_contacts(
+    company_id: str,
+    owner_key: str = Depends(get_owner_key),
+    repo: SupabaseRepository = Depends(get_configured_repository),
+) -> CompanyContactsResponse:
+    company = repo.get_company(owner_key, company_id)
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
+    return CompanyContactsResponse(contacts=repo.list_company_contacts(owner_key, company_id))
 
 
 @router.get("/dashboard")
@@ -112,6 +143,51 @@ def mark_all_notifications_read(
     return NotificationListResponse(notifications=repo.list_notifications(owner_key))
 
 
+@router.get("/queue-state", response_model=QueueStateRecord)
+def get_queue_state(
+    owner_key: str = Depends(get_owner_key),
+    repo: SupabaseRepository = Depends(get_configured_repository),
+) -> QueueStateRecord:
+    return repo.queue_state(owner_key)
+
+
+@router.post("/queue/pause", response_model=QueueStateRecord)
+def pause_queue(
+    owner_key: str = Depends(get_owner_key),
+    repo: SupabaseRepository = Depends(get_configured_repository),
+) -> QueueStateRecord:
+    return repo.set_queue_paused(owner_key, True)
+
+
+@router.post("/queue/resume", response_model=QueueStateRecord)
+def resume_queue(
+    owner_key: str = Depends(get_owner_key),
+    repo: SupabaseRepository = Depends(get_configured_repository),
+) -> QueueStateRecord:
+    return repo.set_queue_paused(owner_key, False)
+
+
+@router.post("/queue/stop", response_model=QueueStateRecord)
+def stop_queue(
+    owner_key: str = Depends(get_owner_key),
+    repo: SupabaseRepository = Depends(get_configured_repository),
+) -> QueueStateRecord:
+    return repo.cancel_pending_generation_jobs(owner_key)
+
+
+@router.post("/workspace/reset", response_model=WorkspaceResetResponse)
+def reset_workspace(
+    owner_key: str = Depends(get_owner_key),
+    repo: SupabaseRepository = Depends(get_configured_repository),
+) -> WorkspaceResetResponse:
+    if repo.owner_has_active_jobs(owner_key):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stop or wait for queued generation jobs to finish before resetting the workspace.",
+        )
+    return repo.reset_workspace(owner_key)
+
+
 @router.post("/upload-companies", response_model=UploadResponse)
 async def upload_companies(
     file: UploadFile = File(...),
@@ -125,7 +201,21 @@ async def upload_companies(
         )
     parsed_rows, tracker_summary = parser.parse(await file.read())
     saved = repo.upsert_companies(owner_key, parsed_rows)
-    return UploadResponse(imported=len(saved), companies=saved, tracker_summary=tracker_summary)
+    queued_contact_jobs = 0
+    if repo.settings.has_openai:
+        queued_jobs = repo.enqueue_contact_discovery_jobs(
+            owner_key,
+            [company.id for company in saved],
+        )
+        queued_contact_jobs = len(queued_jobs)
+        if queued_contact_jobs:
+            saved = repo.list_companies_by_ids(owner_key, [company.id for company in saved])
+    return UploadResponse(
+        imported=len(saved),
+        companies=saved,
+        tracker_summary=tracker_summary,
+        queued_contact_jobs=queued_contact_jobs,
+    )
 
 
 @router.post("/generate/{company_id}", response_model=GenerationJobRecord)
@@ -138,6 +228,7 @@ def generate_template(
     company = repo.get_company(owner_key, company_id)
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
+    ensure_generation_contact_ready(repo, owner_key, company_id)
 
     effective_context = repo.resolve_campaign_context(
         owner_key,
@@ -162,6 +253,7 @@ def regenerate_template(
     company = repo.get_company(owner_key, company_id)
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
+    ensure_generation_contact_ready(repo, owner_key, company_id)
 
     effective_context = repo.resolve_campaign_context(
         owner_key,
@@ -191,6 +283,7 @@ def generate_all_templates(
 
     jobs: list[GenerationJobRecord] = []
     skipped_companies = 0
+    blocked_companies = 0
     regenerate_existing = payload.regenerate_existing if payload else False
     campaign_context = payload.campaign_context if payload else None
     company_ids = [company.id for company in companies]
@@ -207,6 +300,9 @@ def generate_all_templates(
             continue
         if company.id in active_jobs:
             skipped_companies += 1
+            continue
+        if not repo.company_has_valid_email_contact(owner_key, company.id):
+            blocked_companies += 1
             continue
 
         effective_context = (
@@ -227,5 +323,18 @@ def generate_all_templates(
     return BulkGenerationResponse(
         queued_jobs=len(jobs),
         skipped_companies=skipped_companies,
+        blocked_companies=blocked_companies,
         jobs=jobs,
     )
+
+
+@router.post("/generation-jobs/{job_id}/cancel", response_model=GenerationJobRecord)
+def cancel_generation_job(
+    job_id: str,
+    owner_key: str = Depends(get_owner_key),
+    repo: SupabaseRepository = Depends(get_configured_repository),
+) -> GenerationJobRecord:
+    job = repo.cancel_generation_job(owner_key, job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    return job

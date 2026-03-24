@@ -190,7 +190,7 @@ export function TruncatedText({
     lines === 1 ? "truncate" : lines === 2 ? "line-clamp-2" : "line-clamp-3";
 
   return (
-    <Tooltip content={text}>
+    <Tooltip content={text} className="block min-w-0 max-w-full">
       <span className={cn("block min-w-0 max-w-full", lineClass, className)}>{text}</span>
     </Tooltip>
   );

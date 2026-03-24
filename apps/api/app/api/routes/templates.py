@@ -3,7 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_configured_repository, get_owner_key
-from app.models.schemas import EmailTemplateRecord, TemplateUpdateRequest
+from app.models.schemas import (
+    ContactDraftUpdateRequest,
+    ContactOutreachDraftRecord,
+    EmailTemplateRecord,
+    TemplateUpdateRequest,
+)
 from app.services.supabase import SupabaseRepository
 
 
@@ -34,3 +39,18 @@ def update_template(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found.")
     return template
 
+
+@router.patch("/contacts/{contact_id}/drafts/{channel}", response_model=ContactOutreachDraftRecord)
+def update_contact_draft(
+    contact_id: str,
+    channel: str,
+    update: ContactDraftUpdateRequest,
+    owner_key: str = Depends(get_owner_key),
+    repo: SupabaseRepository = Depends(get_configured_repository),
+) -> ContactOutreachDraftRecord:
+    if channel not in {"email", "linkedin"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown draft channel.")
+    draft = repo.update_contact_draft(owner_key, contact_id, channel, update)
+    if not draft:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found.")
+    return draft

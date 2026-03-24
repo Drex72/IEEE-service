@@ -1,12 +1,12 @@
 # IEEE Sponsorship Outreach Platform
 
-Full-stack outreach platform for the IES UNILAG hardware/electrical engineering hackathon. It accepts the sponsorship tracker workbook, researches each company, generates personalized sponsorship emails, stores editable templates in Supabase, and sends through Gmail OAuth.
+Full-stack outreach platform for the IES UNILAG hardware/electrical engineering hackathon. It accepts the sponsorship tracker workbook, researches each company, generates personalized contact-level outreach drafts, stores editable templates in Supabase, and sends through Gmail OAuth.
 
 ## Stack
 
 - `apps/web`: Next.js App Router + TypeScript + Tailwind
 - `apps/api`: FastAPI + OpenAI research/generation agents + Gmail integration
-- `supabase/migrations`: SQL schema for companies, templates, Gmail tokens, and email logs
+- `supabase/migrations`: SQL schema for companies, contacts, outreach drafts, Gmail tokens, and email logs
 
 ## What is implemented
 
@@ -16,8 +16,9 @@ Full-stack outreach platform for the IES UNILAG hardware/electrical engineering 
   - company research
   - leadership research
   - context synthesis
-  - personalized email generation
-- Template fetch, edit, save, and regenerate flows
+  - personalized email and LinkedIn message generation
+  - humanization pass
+- Contact-level draft fetch, edit, save, and regenerate flows
 - Gmail OAuth connection and API-based sending with attachments
 - Dashboard, upload flow, company detail editor, and Gmail settings page
 
@@ -43,7 +44,10 @@ Full-stack outreach platform for the IES UNILAG hardware/electrical engineering 
 
 ## Setup
 
-1. Create a Supabase project and apply [`supabase/migrations/0001_init.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0001_init.sql).
+1. Create a Supabase project and apply the three SQL files in order:
+   - [`supabase/migrations/0001_init.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0001_init.sql)
+   - [`supabase/migrations/0002_async_generation.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0002_async_generation.sql)
+   - [`supabase/migrations/0003_contact_outreach.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0003_contact_outreach.sql)
 2. Copy [`apps/api/.env.example`](/Users/apple/Documents/IEEE/apps/api/.env.example) to `apps/api/.env` and fill in:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_ROLE_KEY`
@@ -139,10 +143,11 @@ NEXT_PUBLIC_OWNER_KEY=ieee-ies-unilag-admin
 
 ### Supabase production setup
 
-Apply both SQL files before using the deployed app:
+Apply all SQL files before using the deployed app:
 
 1. [`supabase/migrations/0001_init.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0001_init.sql)
 2. [`supabase/migrations/0002_async_generation.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0002_async_generation.sql)
+3. [`supabase/migrations/0003_contact_outreach.sql`](/Users/apple/Documents/IEEE/supabase/migrations/0003_contact_outreach.sql)
 
 ### Gmail production callback
 
@@ -154,28 +159,32 @@ https://your-api-service.onrender.com/api/gmail/callback
 
 ## OpenAI flow
 
-The API uses four agents in sequence:
+The API uses five stages in sequence:
 
 1. Company research agent
 2. Leadership research agent
 3. Context synthesizer
-4. Email generation agent
+4. Contact-level email and LinkedIn generation agent
+5. Humanizer agent
 
-The generated context is saved with the template so the user can review why a message was written the way it was.
+The generated context is saved with each contact draft so the user can review why a message was written the way it was.
 
 ## API endpoints
 
 - `POST /api/upload-companies`
 - `GET /api/companies`
 - `GET /api/companies/{company_id}`
+- `GET /api/companies/{company_id}/contacts`
 - `POST /api/generate/{company_id}`
 - `POST /api/regenerate/{company_id}`
 - `GET /api/template/{company_id}`
 - `PATCH /api/template/{company_id}`
+- `PATCH /api/contacts/{contact_id}/drafts/{channel}`
 - `GET /api/gmail/status`
 - `GET /api/gmail/auth-url`
 - `GET /api/gmail/callback`
 - `POST /api/gmail/send`
+- `POST /api/workspace/reset`
 
 ## Notes
 

@@ -10,32 +10,41 @@ import {
   LayoutGrid,
   List,
   LoaderCircle,
+  PauseCircle,
+  PlayCircle,
   RefreshCcw,
   Search,
   Sparkles,
+  StopCircle,
   WandSparkles,
 } from "lucide-react";
 
 import {
   ApiError,
+  getQueueState,
   generateAllTemplates,
   getCampaignContext,
   getCompanies,
   getDashboardSummary,
   getNotifications,
   markAllNotificationsRead,
+  pauseQueue,
+  resumeQueue,
+  stopQueue,
   updateCampaignContext,
 } from "@/lib/api";
 import type {
   CompanyRecord,
   DashboardSummary,
   NotificationRecord,
+  QueueStateRecord,
 } from "@/lib/types";
 import {
   formatMaybeUrl,
   formatTimestamp,
   generationTone,
   jobStatusLabel,
+  jobTriggerLabel,
   statusTone,
 } from "@/lib/utils";
 import {
@@ -54,7 +63,15 @@ import {
   buttonStyles,
 } from "@/components/ui";
 
-type ActiveAction = "refresh" | "saveBrief" | "generateAll" | "markRead" | null;
+type ActiveAction =
+  | "refresh"
+  | "saveBrief"
+  | "generateAll"
+  | "markRead"
+  | "pauseQueue"
+  | "resumeQueue"
+  | "stopQueue"
+  | null;
 type ActivityTab = "queue" | "notifications";
 type DirectoryView = "table" | "grid";
 
@@ -242,6 +259,12 @@ function QueueRow({ company }: { company: CompanyRecord }) {
           <p className="mt-1 text-sm text-white/55">
             {company.industry ?? "Unspecified industry"}
           </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Badge>{jobTriggerLabel(company.latest_generation_trigger)}</Badge>
+            <Badge tone={company.contact_count ? "success" : "warning"}>
+              {company.contact_count} contact{company.contact_count === 1 ? "" : "s"}
+            </Badge>
+          </div>
         </div>
         <StatusPill
           tone={generationTone(company.generation_status)}
@@ -269,9 +292,9 @@ function CompanyTable({
             <thead className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur">
               <tr className="border-b border-line text-left text-xs uppercase tracking-[0.24em] text-white/45">
                 <th className="w-[28%] px-4 py-4 font-medium">Company</th>
-                <th className="w-[18%] px-4 py-4 font-medium">Contact</th>
-                <th className="w-[16%] px-4 py-4 font-medium">Generation</th>
-                <th className="w-[12%] px-4 py-4 font-medium">Draft Status</th>
+                <th className="w-[18%] px-4 py-4 font-medium">Contacts</th>
+                <th className="w-[16%] px-4 py-4 font-medium">Background Status</th>
+                <th className="w-[12%] px-4 py-4 font-medium">Drafts</th>
                 <th className="w-[18%] px-4 py-4 font-medium">Last Activity</th>
                 <th className="w-[8%] px-4 py-4 font-medium" />
               </tr>
@@ -302,14 +325,20 @@ function CompanyTable({
                     </div>
                   </td>
                   <td className="px-4 py-4">
-                    {company.contact_email ? (
+                    <div className="space-y-2">
+                      <Badge tone={company.contact_count ? "success" : "muted"}>
+                        {company.contact_count} contact{company.contact_count === 1 ? "" : "s"}
+                      </Badge>
                       <TruncatedText
-                        text={company.contact_email}
+                        text={
+                          company.contact_email ??
+                          company.contact_details ??
+                          "Open the record to view imported contacts"
+                        }
+                        lines={2}
                         className="text-sm text-white/72"
                       />
-                    ) : (
-                      <span className="text-sm text-white/38">No email</span>
-                    )}
+                    </div>
                   </td>
                   <td className="px-4 py-4">
                     <div className="space-y-2">
@@ -341,9 +370,14 @@ function CompanyTable({
                     </div>
                   </td>
                   <td className="px-4 py-4">
-                    <Badge tone={company.has_template ? "success" : "muted"}>
-                      {company.has_template ? "Ready" : "None"}
-                    </Badge>
+                    <div className="space-y-2">
+                      <Badge tone={company.has_template ? "success" : "muted"}>
+                        {company.has_template ? `${company.draft_count} ready` : "None"}
+                      </Badge>
+                      <p className="text-xs text-white/45">
+                        Contact-specific draft packages saved for this sponsor.
+                      </p>
+                    </div>
                   </td>
                   <td className="px-4 py-4">
                     <span className="text-sm text-white/55">
@@ -416,9 +450,13 @@ function CompanyGrid({
 
             <div className="mt-5 grid gap-4">
               <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-white/40">Primary contact</p>
+                <p className="text-xs uppercase tracking-[0.22em] text-white/40">Contacts</p>
                 <TruncatedText
-                  text={company.contact_email ?? company.contact_details ?? "No contact captured"}
+                  text={
+                    company.contact_email ??
+                    company.contact_details ??
+                    `${company.contact_count} imported contact${company.contact_count === 1 ? "" : "s"}`
+                  }
                   lines={2}
                   className="mt-2 text-sm leading-6 text-white/72"
                 />
@@ -434,7 +472,7 @@ function CompanyGrid({
               </div>
 
               <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-white/40">Generation progress</p>
+                <p className="text-xs uppercase tracking-[0.22em] text-white/40">Background progress</p>
                 {company.generation_status === "queued" ||
                 company.generation_status === "running" ? (
                   <>
@@ -453,8 +491,11 @@ function CompanyGrid({
                 ) : (
                   <p className="mt-2 text-sm text-white/55">
                     {company.has_template
-                      ? "Latest draft is available for review."
-                      : "No background generation run yet."}
+                      ? `${company.draft_count} email draft${company.draft_count === 1 ? "" : "s"} available for review.`
+                      : company.latest_generation_trigger === "contact-discovery" &&
+                          company.generation_status === "completed"
+                        ? "Contact discovery completed. Open the record to review the new contacts and queue outreach."
+                      : "No background run has completed yet."}
                   </p>
                 )}
               </div>
@@ -481,6 +522,7 @@ function CompanyGrid({
 export function DashboardClient() {
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [queueState, setQueueState] = useState<QueueStateRecord | null>(null);
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [campaignBrief, setCampaignBrief] = useState("");
   const [savedCampaignBrief, setSavedCampaignBrief] = useState("");
@@ -513,17 +555,19 @@ export function DashboardClient() {
       return haystack.includes(deferredQuery.toLowerCase());
     })
     .sort((left, right) => {
-      const order = { running: 0, queued: 1, failed: 2, completed: 3 };
+      const order = { running: 0, cancelling: 1, queued: 2, failed: 3, completed: 4 };
       const leftScore =
-        order[left.generation_status as keyof typeof order] ?? (left.has_template ? 4 : 5);
+        order[left.generation_status as keyof typeof order] ?? (left.has_template ? 5 : 6);
       const rightScore =
-        order[right.generation_status as keyof typeof order] ?? (right.has_template ? 4 : 5);
+        order[right.generation_status as keyof typeof order] ?? (right.has_template ? 5 : 6);
       return leftScore - rightScore;
     });
 
   const activeCompanies = filteredCompanies.filter(
     (company) =>
-      company.generation_status === "queued" || company.generation_status === "running",
+      company.generation_status === "queued" ||
+      company.generation_status === "running" ||
+      company.generation_status === "cancelling",
   );
   const failedCompanies = filteredCompanies.filter(
     (company) => company.generation_status === "failed",
@@ -534,18 +578,20 @@ export function DashboardClient() {
     "No campaign brief has been saved yet. Open the editor to define the IEEE IES UNILAG program, the sponsorship ask, and the research priorities.";
 
   async function requestDashboardData() {
-    const [companyRows, dashboardSummary, campaignContext, recentNotifications] =
+    const [companyRows, dashboardSummary, campaignContext, recentNotifications, nextQueueState] =
       await Promise.all([
         getCompanies(),
         getDashboardSummary(),
         getCampaignContext(),
         getNotifications(),
+        getQueueState(),
       ]);
     return {
       companyRows,
       dashboardSummary,
       campaignBrief: campaignContext.brief ?? "",
       recentNotifications,
+      queueState: nextQueueState,
     };
   }
 
@@ -554,6 +600,7 @@ export function DashboardClient() {
       const nextData = await requestDashboardData();
       setCompanies(nextData.companyRows);
       setSummary(nextData.dashboardSummary);
+      setQueueState(nextData.queueState);
       setNotifications(nextData.recentNotifications);
       if (!options?.preserveEditor || !hasUnsavedBrief) {
         setCampaignBrief(nextData.campaignBrief);
@@ -626,10 +673,16 @@ export function DashboardClient() {
           setNotice("Everything is already queued or already has a draft.");
           return;
         }
+        if (response.queued_jobs === 0 && (response.blocked_companies ?? 0) > 0) {
+          setNotice(
+            `${response.blocked_companies} compan${response.blocked_companies === 1 ? "y is" : "ies are"} still waiting on at least one valid email contact before draft generation can be queued.`,
+          );
+          return;
+        }
         setNotice(
           `Background generation is now covering ${response.queued_jobs} compan${
             response.queued_jobs === 1 ? "y" : "ies"
-          }.`,
+          }${response.blocked_companies ? `, while ${response.blocked_companies} ${response.blocked_companies === 1 ? "company is" : "companies are"} still waiting on a valid email contact.` : "."}`,
         );
       } catch (err) {
         setError(
@@ -642,6 +695,49 @@ export function DashboardClient() {
   async function handleRefresh() {
     await runAction("refresh", async () => {
       await syncDashboard({ preserveEditor: true });
+    });
+  }
+
+  async function handlePauseQueue() {
+    await runAction("pauseQueue", async () => {
+      try {
+        const nextQueueState = await pauseQueue();
+        setQueueState(nextQueueState);
+        setNotice(
+          "Background processing is paused. Running work can finish, but no new queued jobs will start until you resume the queue.",
+        );
+        await syncDashboard({ silent: true, preserveEditor: true });
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Could not pause the queue.");
+      }
+    });
+  }
+
+  async function handleResumeQueue() {
+    await runAction("resumeQueue", async () => {
+      try {
+        const nextQueueState = await resumeQueue();
+        setQueueState(nextQueueState);
+        setNotice("Background processing resumed.");
+        await syncDashboard({ silent: true, preserveEditor: true });
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Could not resume the queue.");
+      }
+    });
+  }
+
+  async function handleStopQueue() {
+    await runAction("stopQueue", async () => {
+      try {
+        const nextQueueState = await stopQueue();
+        setQueueState(nextQueueState);
+        setNotice(
+          "Pending queued jobs were stopped and the queue is now paused. Any company already running will finish its current stage unless you cancel it from that company page.",
+        );
+        await syncDashboard({ silent: true, preserveEditor: true });
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Could not stop the queue.");
+      }
     });
   }
 
@@ -769,6 +865,11 @@ export function DashboardClient() {
       {notice ? (
         <Card className="border-success/30 bg-success/10 text-sm text-success">{notice}</Card>
       ) : null}
+      {queueState?.queue_paused ? (
+        <Card className="border-warning/30 bg-warning/10 text-sm text-warning">
+          The background queue is paused. New discovery and draft jobs can still be added, but they will wait until you resume processing.
+        </Card>
+      ) : null}
 
       {initialLoading ? (
         <>
@@ -855,6 +956,33 @@ export function DashboardClient() {
                     )}
                     Queue All Companies
                   </Button>
+                  {/* {queueState?.queue_paused ? (
+                    <Button
+                      variant="secondary"
+                      disabled={activeAction !== null}
+                      onClick={() => void handleResumeQueue()}
+                    >
+                      {activeAction === "resumeQueue" ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <PlayCircle className="h-4 w-4" />
+                      )}
+                      Resume Queue
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      disabled={activeAction !== null}
+                      onClick={() => void handlePauseQueue()}
+                    >
+                      {activeAction === "pauseQueue" ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <PauseCircle className="h-4 w-4" />
+                      )}
+                      Pause Queue
+                    </Button>
+                  )} */}
                 </div>
               </div>
             </Card>
@@ -865,6 +993,11 @@ export function DashboardClient() {
                   <p className="text-xs uppercase tracking-[0.32em] text-white/45">Campaign Activity</p>
                   <p className="mt-3 text-lg font-medium text-white">
                     {activeCompanies.length} active runs, {failedCompanies.length} failures, {notifications.length} recent updates
+                  </p>
+                  <p className="mt-2 text-sm text-white/55">
+                    Queue {queueState?.queue_paused ? "paused" : "active"} with{" "}
+                    {queueState?.queued_jobs ?? 0} queued, {queueState?.running_jobs ?? 0} running, and{" "}
+                    {queueState?.cancelling_jobs ?? 0} stopping.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-3">
@@ -993,19 +1126,63 @@ export function DashboardClient() {
               <Badge tone={failedCompanies.length ? "danger" : "muted"}>
                 {failedCompanies.length} failed
               </Badge>
+              <Badge tone={queueState?.queue_paused ? "warning" : "success"}>
+                {queueState?.queue_paused ? "Queue paused" : "Queue active"}
+              </Badge>
             </div>
-            <Button
-              variant="secondary"
-              disabled={activeAction !== null || notifications.length === 0}
-              onClick={() => void handleMarkRead()}
-            >
-              {activeAction === "markRead" ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" />
+            <div className="flex flex-wrap gap-2">
+              {queueState?.queue_paused ? (
+                <Button
+                  variant="secondary"
+                  disabled={activeAction !== null}
+                  onClick={() => void handleResumeQueue()}
+                >
+                  {activeAction === "resumeQueue" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <PlayCircle className="h-4 w-4" />
+                  )}
+                  Resume
+                </Button>
               ) : (
-                <CheckCircle2 className="h-4 w-4" />
+                <Button
+                  variant="secondary"
+                  disabled={activeAction !== null}
+                  onClick={() => void handlePauseQueue()}
+                >
+                  {activeAction === "pauseQueue" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <PauseCircle className="h-4 w-4" />
+                  )}
+                  Pause
+                </Button>
               )}
-              Mark Updates Read
-            </Button>
+              <Button
+                variant="ghost"
+                disabled={activeAction !== null || (queueState?.queued_jobs ?? 0) === 0}
+                onClick={() => void handleStopQueue()}
+              >
+                {activeAction === "stopQueue" ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <StopCircle className="h-4 w-4" />
+                )}
+                Stop Pending
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={activeAction !== null || notifications.length === 0}
+                onClick={() => void handleMarkRead()}
+              >
+                {activeAction === "markRead" ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                Mark Updates Read
+              </Button>
+            </div>
           </div>
         }
       >

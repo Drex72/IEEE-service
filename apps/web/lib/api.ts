@@ -2,15 +2,19 @@ import { getOwnerKey } from "@/lib/owner-key";
 import type {
   BulkGenerationResponse,
   CampaignContextRecord,
+  CompanyContactsResponse,
   CompanyListResponse,
   CompanyRecord,
+  ContactOutreachDraftRecord,
   DashboardSummary,
   EmailTemplateRecord,
   GenerationJobRecord,
   GmailStatusResponse,
   NotificationListResponse,
+  QueueStateRecord,
   SendEmailPayload,
   UploadResponse,
+  WorkspaceResetResponse,
 } from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -58,6 +62,11 @@ export async function getCompanies() {
 
 export async function getCompany(companyId: string) {
   return request<CompanyRecord>(`/api/companies/${companyId}`);
+}
+
+export async function getCompanyContacts(companyId: string) {
+  const payload = await request<CompanyContactsResponse>(`/api/companies/${companyId}/contacts`);
+  return payload.contacts;
 }
 
 export async function getDashboardSummary() {
@@ -148,6 +157,22 @@ export async function updateTemplate(
   });
 }
 
+export async function updateContactDraft(
+  contactId: string,
+  channel: "email" | "linkedin",
+  payload: {
+    subject?: string | null;
+    preview_line?: string | null;
+    content_markdown?: string | null;
+    content_html?: string | null;
+  },
+) {
+  return request<ContactOutreachDraftRecord>(`/api/contacts/${contactId}/drafts/${channel}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getGmailStatus() {
   return request<GmailStatusResponse>("/api/gmail/status");
 }
@@ -155,6 +180,34 @@ export async function getGmailStatus() {
 export async function getNotifications() {
   const payload = await request<NotificationListResponse>("/api/notifications");
   return payload.notifications;
+}
+
+export async function getQueueState() {
+  return request<QueueStateRecord>("/api/queue-state");
+}
+
+export async function pauseQueue() {
+  return request<QueueStateRecord>("/api/queue/pause", {
+    method: "POST",
+  });
+}
+
+export async function resumeQueue() {
+  return request<QueueStateRecord>("/api/queue/resume", {
+    method: "POST",
+  });
+}
+
+export async function stopQueue() {
+  return request<QueueStateRecord>("/api/queue/stop", {
+    method: "POST",
+  });
+}
+
+export async function cancelGenerationJob(jobId: string) {
+  return request<GenerationJobRecord>(`/api/generation-jobs/${jobId}/cancel`, {
+    method: "POST",
+  });
 }
 
 export async function markAllNotificationsRead() {
@@ -173,5 +226,11 @@ export async function sendEmail(payload: SendEmailPayload) {
   return request<{ status: string; message_id: string }>("/api/gmail/send", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function resetWorkspace() {
+  return request<WorkspaceResetResponse>("/api/workspace/reset", {
+    method: "POST",
   });
 }

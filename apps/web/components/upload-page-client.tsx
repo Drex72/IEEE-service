@@ -82,7 +82,7 @@ export function UploadPageClient() {
             />
             <div className="mt-4 grid gap-3 text-sm leading-6 text-white/62">
               <p>The uploader expects `.xlsx` and works best with the sponsor tracker columns for company, contact, status, and notes.</p>
-              <p>The import does not generate outreach yet. It prepares sponsor records and campaign guidance for the next step.</p>
+              <p>The import prepares sponsor records immediately, then background contact discovery begins for companies that still need an official inbox or a person-level contact.</p>
             </div>
           </div>
 
@@ -150,8 +150,8 @@ export function UploadPageClient() {
               <p className="text-xs uppercase tracking-[0.28em] text-white/45">Next Steps</p>
               <div className="mt-5 space-y-4">
                 {[
-                  "Refine the campaign brief on the dashboard before generation begins.",
-                  "Queue sponsor research for one company or the full list in the background.",
+                  "Refine the campaign brief on the dashboard so contact discovery and outreach research stay aligned with the program.",
+                  "Monitor background contact discovery until each company has the right outreach routes.",
                   "Open any sponsor record to inspect progress, refine the draft, and send outreach.",
                 ].map((item) => (
                   <div
@@ -204,7 +204,9 @@ export function UploadPageClient() {
                 {result.imported} compan{result.imported === 1 ? "y" : "ies"} are ready for outreach.
               </h3>
               <p className="mt-4 text-sm leading-7 text-white/65">
-                Continue to the dashboard to finalize the campaign brief and queue sponsor research.
+                {result.queued_contact_jobs
+                  ? `${result.queued_contact_jobs} background contact discovery job${result.queued_contact_jobs === 1 ? "" : "s"} started automatically. Continue to the dashboard to monitor progress and queue outreach once contacts are ready.`
+                  : "Continue to the dashboard to finalize the campaign brief, review contacts, and queue sponsor outreach."}
               </p>
             </div>
 

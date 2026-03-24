@@ -14,6 +14,21 @@ class TrackerSummary(BaseModel):
     ieee_angle: str | None = None
 
 
+class CompanyContactImport(BaseModel):
+    external_key: str
+    raw_contact: str | None = None
+    full_name: str | None = None
+    role_title: str | None = None
+    email: str | None = None
+    linkedin_url: str | None = None
+    phone_or_address: str | None = None
+    reach_channel: str | None = None
+    notes: str | None = None
+    source_row: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    is_primary: bool = False
+
+
 class CompanyImportRow(BaseModel):
     name: str
     website: str | None = None
@@ -27,12 +42,14 @@ class CompanyImportRow(BaseModel):
     status: str | None = None
     source_row: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    contacts: list[CompanyContactImport] = Field(default_factory=list)
 
 
 class UploadResponse(BaseModel):
     imported: int
     companies: list["CompanyRecord"]
     tracker_summary: TrackerSummary | None = None
+    queued_contact_jobs: int = 0
 
 
 class TemplateGenerationRequest(BaseModel):
@@ -42,6 +59,7 @@ class TemplateGenerationRequest(BaseModel):
 class CampaignContextRecord(BaseModel):
     owner_key: str
     brief: str | None = None
+    queue_paused: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -52,6 +70,13 @@ class CampaignContextUpdateRequest(BaseModel):
 
 class CompanyUpdateRequest(BaseModel):
     campaign_context_override: str | None = None
+
+
+class ContactDraftUpdateRequest(BaseModel):
+    subject: str | None = None
+    preview_line: str | None = None
+    content_markdown: str | None = None
+    content_html: str | None = None
 
 
 class CompanyRecord(BaseModel):
@@ -71,11 +96,14 @@ class CompanyRecord(BaseModel):
     campaign_context_override: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     has_template: bool = False
+    contact_count: int = 0
+    draft_count: int = 0
     generation_status: str | None = None
     generation_progress_percent: int | None = None
     generation_current_step: str | None = None
     generation_error_message: str | None = None
     latest_generation_job_id: str | None = None
+    latest_generation_trigger: str | None = None
     latest_generation_updated_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -89,6 +117,25 @@ class ResearchSource(BaseModel):
     title: str | None = None
     url: str | None = None
     note: str | None = None
+
+
+class DiscoveredContact(BaseModel):
+    full_name: str | None = None
+    role_title: str | None = None
+    email: str | None = None
+    linkedin_url: str | None = None
+    reach_channel: str | None = None
+    rationale: str | None = None
+    sources: list[ResearchSource] = Field(default_factory=list)
+
+
+class ContactDiscoveryResult(BaseModel):
+    company_name: str
+    search_summary: str | None = None
+    official_company_contact: DiscoveredContact | None = None
+    recommended_person_contact: DiscoveredContact | None = None
+    missing_information: list[str] = Field(default_factory=list)
+    sources: list[ResearchSource] = Field(default_factory=list)
 
 
 class CompanyResearch(BaseModel):
@@ -139,6 +186,52 @@ class GeneratedEmail(BaseModel):
     body_markdown: str
     body_html: str
     personalization_highlights: list[str] = Field(default_factory=list)
+
+
+class GeneratedLinkedInMessage(BaseModel):
+    body_markdown: str
+    body_html: str | None = None
+    personalization_highlights: list[str] = Field(default_factory=list)
+
+
+class ContactOutreachDraftRecord(BaseModel):
+    id: str
+    owner_key: str
+    company_id: str
+    contact_id: str
+    channel: str
+    subject: str | None = None
+    preview_line: str | None = None
+    content_markdown: str
+    content_html: str | None = None
+    generated_context: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CompanyContactRecord(BaseModel):
+    id: str
+    owner_key: str
+    company_id: str
+    external_key: str
+    full_name: str | None = None
+    role_title: str | None = None
+    email: str | None = None
+    linkedin_url: str | None = None
+    raw_contact: str | None = None
+    phone_or_address: str | None = None
+    reach_channel: str | None = None
+    notes: str | None = None
+    source_row: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    is_primary: bool = False
+    drafts: list[ContactOutreachDraftRecord] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CompanyContactsResponse(BaseModel):
+    contacts: list[CompanyContactRecord] = Field(default_factory=list)
 
 
 class GenerationStepRecord(BaseModel):
@@ -199,6 +292,8 @@ class EmailAttachment(BaseModel):
 
 class SendEmailRequest(BaseModel):
     company_id: str
+    contact_id: str | None = None
+    draft_id: str | None = None
     recipient_email: str
     subject: str
     body_markdown: str
@@ -229,6 +324,15 @@ class DashboardSummary(BaseModel):
     unread_notifications: int = 0
 
 
+class WorkspaceResetResponse(BaseModel):
+    status: str
+    deleted_companies: int = 0
+    deleted_contacts: int = 0
+    deleted_drafts: int = 0
+    deleted_jobs: int = 0
+    deleted_notifications: int = 0
+
+
 class BulkGenerationRequest(BaseModel):
     company_ids: list[str] = Field(default_factory=list)
     regenerate_existing: bool = False
@@ -238,7 +342,16 @@ class BulkGenerationRequest(BaseModel):
 class BulkGenerationResponse(BaseModel):
     queued_jobs: int
     skipped_companies: int = 0
+    blocked_companies: int = 0
     jobs: list[GenerationJobRecord] = Field(default_factory=list)
+
+
+class QueueStateRecord(BaseModel):
+    owner_key: str
+    queue_paused: bool = False
+    queued_jobs: int = 0
+    running_jobs: int = 0
+    cancelling_jobs: int = 0
 
 
 class NotificationRecord(BaseModel):
